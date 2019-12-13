@@ -1,0 +1,3484 @@
+---
+title: "Upside Next Prefecture 分析"
+author: "Kei Kawamura"
+date: '`r format(Sys.Date(), "%y/%m/%d")`'
+output:  
+  rmdformats::readthedown:
+    code_folding: hide
+    self_contained: true
+    thumbnails: false
+    lightbox: false
+    md_extensions: -ascii_identifiers
+---
+
+## 県別 Upside Analysis  {.tabset .tabset-fade} 
+
+```{r, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+rm(list = ls(all=TRUE))
+library(tidyverse)
+library(readr)
+library(dplyr)
+library(tidyr)
+library(DT)
+library(ggplot2)
+library(ggsci)
+library(gridExtra)
+library(choroplethr)
+library(choroplethrAdmin1)
+library(RColorBrewer)
+library(ggrepel)
+library(gtable)
+library(grid)
+```
+
+
+Catch-MSY formula
+$${\Large B_{t+1} = B_t + \frac{\phi+1}{\phi}gB_t \Biggl(1-\Biggl(\frac{B_t}{K}\Biggr)\Biggr)-H_t}$$
+
+前段階情報
+単位：
+dt.weight -> t
+dr.price -> 100万円
+dt.comp : harvest1 -> t
+dt.price -> ＄
+
+## Section 1ユーザーの切替  
+ - Temp_User=１の時、慧が使用（Mac）  
+ - Temp_User=２の時、gakuが使用
+ - Temp_User=３の時、慧が使用（Surface）
+```{r}
+Temp_User=1
+if(Temp_User==1){setwd("/Users/keikawamura/Dropbox/Upside_Kei.K/Upside_project/Current_Working_Data")}else if
+(Temp_User==2){setwd("~/Dropbox/#_0_gakuGroup/Upside_Kei.K")}else if
+(Temp_User==3){setwd("C:/Users/aquak/Dropbox/Upside_Kei.K")}
+
+```
+    
+    
+## Section 2 データの読み込み
+
+・データフレームの説明
+dt.weight : 漁獲量データ(1962~2015)
+dt.price : 産出額データ(2003~2015)
+translation_pref : 都道府県の翻訳データ
+tlanslation_fish : 魚種の翻訳データ
+multi_stock : 系群データ
+```{r}
+if(Temp_User==1){setwd("/Users/keikawamura/Dropbox/Upside_Kei.K/Upside_project/Current_Working_Data/Datasets")}else if
+(Temp_User==2){setwd("~/Dropbox/#_0_gakuGroup/Upside_Kei.K")}else if
+(Temp_User==3){setwd("C:/Users/aquak/Dropbox/Upside_Kei.K")}
+
+#漁獲量データを読み込み、dt.weightに格納 
+dt.weight<-read.csv("dataKaimenKenbetsu_modified_1962~2015.csv")
+#産出額データを読み込み、dt.priceに格納
+dt.price<-read_csv("dataKaimenSanshutsugaku_modified.csv")
+#都道府県の翻訳データを読み込み、translation_prefに格納 
+##  Jan 4 2018:gaku  modified to add prefecture code
+translation_pref<-read.csv("translation_prefecture.csv")
+#魚種の翻訳データを読み込み、translation_fishに格納  
+translation_fish<-read.csv("translation_fish.csv")
+
+if(Temp_User==1){setwd("/Users/keikawamura/Google ドライブ/Upside_Kei/Upside_project/Current_Working_Data/Datasets")}else if
+(Temp_User==2){setwd("~/Dropbox/Drop_REsearch/Upside_next_morioka_work/data/miscData")}else if
+(Temp_User==3){setwd("C:/Users/aquak/Dropbox/Upside_Kei.K")}
+#系群データを読み込み、multi_stockに格納
+multi_stock<-read.csv("multi_Stock_complete_All.csv")
+
+```
+     
+## Section 3 データの加工 {.tabset .tabset-fade}
+
+### 3-1 dt.weightの加工    
+
+必要に応じてデータの期間を限定し、必要な部分のみを抽出する。<br>
+
+・データフレームの説明
+dt.weight1 : 指定期間内の漁獲データ
+```{r}
+#variable→fishに、value→weight_tに列名を変更する。<br>
+dt.weight<-dt.weight[c("year","prefecture","variable","value")]
+colnames(dt.weight)<-c("year","prefecture","fish","weight_t")
+
+#NAを排除。
+dt.weight<-dt.weight %>%
+  filter(weight_t>0)
+dt.price<-dt.price %>%
+  filter(value_million_JPY>0)
+```
+    
+     
+### 3-2 dt.weightとの結合 
+
+漁獲量データ(dt.weight)と都道府県の翻訳データ(translation_pref)、魚種の翻訳データ(translation_fish)を結合
+
+```{r}
+#県名・海区名データを結合
+dt.weight<-merge(dt.weight,translation_pref,by="prefecture")
+dt.weight <- dt.weight %>%
+  select(prefecture,year,fish,weight_t,alphabet,pref_code,region.kaiku.,region,region_name)
+dt.price <- merge(dt.price,translation_pref,by="prefecture")
+
+#列名を変更
+colnames(dt.weight)<-c("prefecture","year","fish","weight_t","alphabet_pref","pref_code","region_kaiku","region","region_name")
+colnames(dt.price)<-c("prefecture","year","fish","value_million_JPY","alphabet_pref","pref_code","region_kaiku","region","region_name","pref_num")
+
+#魚種の翻訳。translation_fishには92魚種しか含まれていないが、元データが異なり、系群がついていないので実際にはtranslation_fishの方が多く魚種が含まれている。
+dt.weight <-merge(dt.weight,translation_fish,by="fish")
+dt.price <- merge(dt.price,translation_fish,by="fish")
+
+```
+     
+     
+### 3-3 dt.weightとの結合
+系群データ(multi_stock)から魚種名(fish)、県名(prefecture)、系群名(stock)を抽出。<br>
+その後、全体データ(dt.weight)と結合。<br>
+この時、stock_num＝"０"のデータの系群を"single_stock"にする。<br>
+系群が与えられていないデータを排除する。魚種名と系群名を合わせた新たな列"fish_stock"を作成。
+```{r}
+#multi_stockから必要な列(魚種名・県名・系群名)を抽出
+multi_stock<-multi_stock%>%
+  dplyr::select(fish,prefecture,stock)
+
+#系群のないものにsingle_stockを付与
+dt.weight <-dt.weight %>%
+  left_join(multi_stock,by = c("fish","prefecture"))%>%
+  mutate(stock = ifelse(stock_num == "0","single_stock", as.character(stock)))%>%
+  filter(!is.na(stock))
+
+dt.price <- dt.price %>%
+  left_join(multi_stock,by=c("fish","prefecture")) %>%
+  mutate(stock = ifelse(stock_num == "0","single_stock", as.character(stock)))%>%
+  filter(!is.na(stock))
+
+#系群と魚種名の結合
+dt.weight$fish_stock<-paste(dt.weight$fish,dt.weight$stock,sep = "_")
+dt.price$fish_stock<-paste(dt.price$fish,dt.price$stock,sep = "_")
+```
+
+### 3-4 系群名と魚種名を合わせたリストの作成
+
+・データフレームの説明
+fish_stock_name : 指定期間内の漁獲データから魚種名だけを抽出して作成された指定期間内の漁獲魚種リスト
+```{r}
+#指定機関内の漁獲量データに含まれる魚種のリストを作成
+fish_stock_name<-dt.weight %>%
+  select(fish_stock)
+fish_stock_name<-unique(fish_stock_name)
+```
+
+## Section 4  各系群の各県漁獲割合の算出
+
+・データフレームの説明
+Temp_1 : 指定した魚種の漁獲データ
+pref_fish_stock : 指定した魚種を漁獲している県のリスト
+Temp_2 : 各魚種の魚種・県名・県コード・合計漁獲量のデータ
+Temp_3 : 全魚種の魚種・県名・県コード・指定期間内の当魚種の合計漁獲量・指定期間内の魚種毎の総漁獲量・県毎の漁獲割合のデータ
+PrefectureAllocation : Temp_3と同じ
+
+```{r}
+#期間は開始：2001年　終了　2010年　震災を含まないデータをつくるため。
+Start_Year=2001
+End_Year=2010
+dt.weight1<-subset(dt.weight,year>(Start_Year-1) & year<(End_Year+1))
+
+#まず、空のデータフレームを作成（Temp_3）。
+Temp_3=0
+
+for (n in 1:nrow(fish_stock_name)[1]){
+ #Temp_Nameにfish_stock_nameの1列目（魚種名）を格納。 
+  Temp_Name=fish_stock_name[n,1]
+  
+#Temp_1にdt.weight内のfish_stockがTemp_Nameに一致するデータのみを抽出。
+Temp_1<-dt.weight1 %>%
+  filter(fish_stock==Temp_Name) 
+
+#pref_fish_stockにfish_stockが漁獲可能な県のリストを作成し格納。
+pref_fish_stock<-as.data.frame(unique(Temp_1$alphabet_pref))
+
+#Temp_2には、dt.weightのデータをdplyr::group_byでalphabet_prefとfish_stockが共通するものを選択し、dplyr::mutateで県の指定期間内の合計漁獲量を魚種ごとに計算し新たな列として作成。その後、魚種名がTemp_Nameのもの抽出し、必要なデータ以外を排除。
+# ##  Jan 4 2018:gaku  added pref_code  ### feb 16 2019 kei modified
+Temp_2<-dt.weight1 %>%
+  dplyr::group_by(alphabet_pref,fish_stock,add=F) %>%
+  dplyr::mutate(total_pref=sum(weight_t)) %>% #total_pref=指定期間内のある魚種のある県における総漁獲量
+  dplyr::filter(fish_stock==Temp_Name) %>%
+  dplyr::select("fish_stock","alphabet_pref","pref_code","total_pref",region_kaiku,region,region_name) %>%
+  unique() %>%
+  ungroup() %>%
+  mutate(total = sum(total_pref)) %>% #total=指定期間内のある魚種の総漁獲量  
+  mutate(percentage_h = (total_pref)/(total)) #percentage_h=ある魚種をある県が漁獲している割合 
+  
+
+# 以上の作業をループして117魚種分行う。
+if(n==1){Temp_3<-Temp_2}
+else{Temp_3<-rbind(Temp_2,Temp_3)}
+}
+
+Sys.Date()
+class(Sys.Date())
+now=as.character(Sys.Date())  # 現在の日付をテキスト型に変更
+class(now)
+
+PrefectureAllocation_harvest<-Temp_3
+
+File_Name=paste("PrefectureAllocation",now,".csv", sep="") 
+
+##  RからExcelで文字化けしないCSV fileとして出力する
+##  https://qiita.com/nozma/items/6de3e636d175cc3d6e3f
+
+if(Temp_User==1){setwd("/Users/keikawamura/Dropbox/Upside_Kei.K/Upside_project/Current_Working_Data")}else if
+(Temp_User==2){setwd("~/Dropbox/#_0_gakuGroup/Upside_Kei.K/Output")}else if
+(Temp_User==3){setwd("C:/Users/aquak/Dropbox/Upside_Kei.K")}
+
+#write.csv(PrefectureAllocation, file= File_Name,fileEncoding = "CP932")
+
+rm(Temp_1,Temp_2,Temp_3)
+
+DT::datatable(PrefectureAllocation_harvest,rownames = FALSE,filter = 'top')
+```
+
+## Section 4_1 各系群の各県漁獲割合の算出（price）
+
+```{r}
+PrefectureAllocation_price <- dt.price %>%
+  group_by(alphabet_pref,fish_stock) %>%
+  mutate(total_pref_sp = sum(value_million_JPY)) %>%
+  ungroup() %>%
+  group_by(fish_stock) %>%
+  mutate(total_sp = sum(value_million_JPY)) %>%
+  ungroup() %>%
+  mutate(percentage_p = total_pref_sp/total_sp) %>%#percentage_p ある魚種の生産額割合
+  select(fish_stock,alphabet_pref,total_pref_sp,total_sp,percentage_p,region_kaiku,region,region_name) %>%
+  unique()
+PrefectureAllocation_price$fish_stock <- as.character(PrefectureAllocation_price$fish_stock)
+
+```
+
+
+## Section ５  Upside Japanのデータ読み込みと各県への時系列での漁獲、利益、割り当て
+
+・データフレームの説明
+Temp_Data_Catch : かなえさんが作成したデータセット（各シナリオ）
+translation_kanae_kei : 慧のデータとかなえさんのデータでの魚種名対照表
+dt.comp : かなえさんのデータと既存のデータを併合したデータ
+```{r}
+##  load catch data 
+if(Temp_User==1){setwd("/Users/keikawamura/Google ドライブ/Upside_Kei/Upside_project/Current_Working_Data/Datasets")}else if
+(Temp_User==2){setwd("~/Dropbox/#_0_gakuGroup/Upside_Kei.K/Temp_Pref_Run_Data5Jan19/output")}else if
+(Temp_User==3){setwd("C:/Users/aquak/Dropbox/Upside_Kei.K/Temp_Pref_Run_Data5Jan19/output")}
+#if(Temp_User==1){setwd("~/Upside/Surplus_Production_Japan_KK/output")}
+Temp_Data_Catch=read.csv("japan_20190118_mo_opt.csv", header=T)
+#Temp_Data_Catch=read.csv("disc_rate_0.4_Japan_master_output_2019_opt.csv", header=T)
+if(Temp_User==1){setwd("/Users/keikawamura/Dropbox/Upside_Kei.K/Upside_project/Current_Working_Data/Datasets")}else if
+(Temp_User==2){setwd("~/Dropbox/#_0_gakuGroup/Upside_Kei.K")}else if
+(Temp_User==3){setwd("C:/Users/aquak/Dropbox/Upside_Kei.K")}
+
+translation_kanae_kei<-read.csv("kanae_kei_fishlist.csv")
+#岩田さんに指摘されたタコとウニはUpsideに適さないので取り除く
+translation_kanae_kei <- translation_kanae_kei %>%
+  filter(!fish_stock=="octopus_single_stock") %>%
+  filter(!fish_stock=="sea_urchin_single_stock")
+
+Temp_Data_Catch <- dplyr::left_join(Temp_Data_Catch,translation_kanae_kei,by="fishery")
+dt.comp <- dplyr::left_join(Temp_Data_Catch,PrefectureAllocation_harvest,by="fish_stock")
+#dt.comp <- dplyr::left_join(dt.comp,PrefectureAllocation_price)
+
+dt.comp$pref_catch<-(dt.comp$harvest1)*(dt.comp$percentage_h) #pref_catch = その年のその県の漁獲量：単位はt
+dt.comp$pref_value<-(dt.comp$profit1)*(dt.comp$percentage_h) #pref_value = その年のその県の生産額 ：単位は$
+dt.comp$pref_Unit_price<-(dt.comp$pref_value)/((dt.comp$pref_catch)*1000) #pref_Unit_price = 県単位での単価 :単位は$
+dt.comp$year <- dt.comp$time + 2015
+```
+
+## Section ６  県別データへのまとめ
+
+```{r}
+
+#############
+
+disRate=.05
+# select senarios management: SQ,FMSY, econOpt    catch share: no share
+Temp_5<-dt.comp %>%
+  dplyr::filter(management == "SQ"|management == "FMSY"|management == "econOpt") %>%
+  dplyr::filter(catchShare == "no_CS")
+  
+##  summarize prefecture, year and management 
+Temp_6<-Temp_5 %>%
+  dplyr::group_by(alphabet_pref,management, time) %>%
+  dplyr::summarize(Yaer_Catch=sum(pref_catch),Yaer_Value=sum(pref_value)) %>%
+  dplyr::mutate(DiscountedValue=Yaer_Value*1/((1+disRate)^(time-1)))  %>%
+  ungroup()
+
+
+##  calculate presenet value for 50 years
+Temp_7<-Temp_6 %>%
+  dplyr::group_by(alphabet_pref,management) %>%
+  dplyr::summarize(PV=sum(DiscountedValue))
+
+File_Name2=paste("PrefectureResult",now,".csv", sep="") 
+File_Name3=paste("PrefecturePVResult",now,".csv", sep="") 
+
+if(Temp_User==1){setwd("/Users/keikawamura/Dropbox/Upside_Kei.K/Upside_project/Current_Working_Data")}else if
+(Temp_User==2){setwd("~/Dropbox/#_0_gakuGroup/Upside_Kei.K/Output")}else if
+(Temp_User==3){setwd("C:/Users/aquak/Dropbox/Upside_Kei.K")}
+
+#write.csv(Temp_6, file= File_Name2,fileEncoding = "CP932")
+#write.csv(Temp_7, file= File_Name3,fileEncoding = "CP932")
+#write.csv(dt.comp,file = "result_16may19.csv",fileEncoding = "CP932")
+DT::datatable(Temp_6,rownames = FALSE, colnames = c("alphabet_pref","management","time","Year_Catch","Year_value","DiscountValue"), caption = "PrefectionResult")
+```
+
+## Section 7  Upside県別データ(harvest) 
+()内はプロット時の急激なスパイクの原因となる魚種
+*aomori (sea_cucumber_single_stock) (なまこ)
+*aichi (manila_clam_single_stock) (あさり)
+*hyogo (sea_cucumber_single_stock) (なまこ)
+*okayama (octopus_single_stock) (たこ)  
+*miyazaki (round_herring_pacific_stock) (ウルメイワシ)
+*kagoshima (round_herring_pacific_stock) (ウルメイワシ)
+
+```{r}
+#有効数字を999桁に設定
+options(scipen=999)
+#小数点2桁で表示するfunctionを作成
+scaleFUN <- function(x) sprintf("%.2f", x)
+
+if(Temp_User==1){setwd("/Users/keikawamura/Dropbox/Upside_Kei.K/Upside_project/Current_Working_Data/timeseries/prefecture/harvest")}else if(Temp_User==2){setwd("~/Dropbox/#_0_gakuGroup/Upside_Kei.K/Output")}else if(Temp_User==3){setwd("C:/Users/aquak/Dropbox/Upside_Kei.K/timeseries/prefecture/harvest")}
+
+#現在dt.comp$alphabet_prefとtranslation_pref$alphabetのclassがfactorになっているので、characterに変更
+dt.comp$alphabet_pref<-as.character(dt.comp$alphabet_pref)
+translation_pref$alphabet<-as.character(translation_pref$alphabet)
+
+#海なし県の排除
+translation_pref_remove_na<-translation_pref %>%
+  filter(!is.na(pref_code))
+
+if(Temp_User==1){setwd("/Users/keikawamura/Dropbox/Upside_Kei.K/Upside_project/Current_Working_Data")}else if
+(Temp_User==2){setwd("~/Dropbox/#_0_gakuGroup/Upside_Kei.K/Output")}else if
+(Temp_User==3){setwd("C:/Users/aquak/Dropbox/Upside_Kei.K/timeseries/prefecture/harvest")}
+
+#岩田さんに言われたタコ・ウニは取り除く
+#ミナミマグロは生息していないので取り除く
+dt.comp1<-dt.comp %>%
+ filter(!fish_stock=="sea_cucumber_single_stock") %>%
+ filter(!fish_stock=="octopus_single_stock") %>%
+　filter(!fish_stock=="sea_urchin_single_stock") %>%
+  filter(!fish_stock=="southern_bluefin_tuna_single_stock")
+ #filter(!fish_stock=="round_herring_pacific_stock") %>%
+  #filter(!fish_stock=="manila_clam_single_stock")
+dt.comp1 <- dt.comp1 %>%
+  na.omit()
+
+for (n in 1:nrow(translation_pref_remove_na)) {
+  comp_name=translation_pref_remove_na[n,2]
+#dt.comp1から指定した県・政策のデータを抽出
+dt.comp2.4 <- dt.comp1 %>%
+  filter(alphabet_pref==comp_name) %>%
+  filter(management %in% c("FMSY","SQ","econOpt"))
+
+#その年の全漁獲量を計算し追加
+dt.comp2<-dt.comp2.4 %>%
+  group_by(management,time) %>%
+  mutate(total_harvest = (sum(pref_catch))/1000) %>% #total_harvest = その年の全漁獲量
+  ungroup()
+
+#県名・政策・年・全漁獲量データを抽出
+dt.comp2 <- dt.comp2[,c(22,4,9,34)]
+dt.comp2 <- unique(dt.comp2)
+
+#comp_name1~3にグラフタイトルを格納
+comp_name1 <- paste(comp_name,"Comparison of SQ and econOpt",sep="_")
+comp_name2 <- paste(comp_name,"Comparison of SQ and FMSY",sep="_")
+comp_name3 <- paste(comp_name,"Timeseries",sep = "_")
+
+#漁獲量においてFMSYがSQに追いつく年数の計算
+dt.comp2_r <- dt.comp2 %>%
+  tidyr::spread(key=management,value=total_harvest)
+
+#head()を用いて並べる
+dt.comp2_r1 <- head(dt.comp2_r[dt.comp2_r$FMSY>dt.comp2_r$SQ,],1)
+
+#reach_yearにfmsyがsqが追いつく年数を格納
+reach_year <- dt.comp2_r1[1,c(1,2)]
+
+# Write a bar graph econOpt / SQ
+#dt.comp2_r$rateにeconOpt/SQ-1を格納。つまり、econOptはSQの何割分、多い/少いのかを表している
+dt.comp2_r$rate <- (dt.comp2_r$econOpt/dt.comp2_r$SQ)-1
+#グラフのy軸を最大値・最小値に合わせるために計算し、それぞれmax_r,min_rに格納
+max_r <- max(dt.comp2_r$rate)
+min_r <- min(dt.comp2_r$rate)
+#rateが0以下以上でbelow,aboveを付与する
+dt.comp2_r$Rate <- ifelse(dt.comp2_r$rate < 0, "below", "above")
+
+#小数点以下の数字の有効数字を調節するfunctionを作成(cutcut)
+cutcut <- function(x,digits){
+  return (floor(x * 10^digits) /10^digits)
+}
+
+#値がマイナスの時には四捨五入すると軸が値よりも小さくなる場合があるため、マイナスの場合は切り上げを行う
+if(min_r>0){min_r <- 0}else{min_r <- cutcut(min_r,digits=2)}
+g1 <- ggplot(dt.comp2_r, aes(x = time,y = rate, fill = Rate)) +
+  theme_light(base_family = "HiraKakuPro-W3")+ 
+  labs(x="年", y="割合") +
+  labs(title = comp_name1) +
+  ylim(min_r,max_r) +
+  theme(axis.text=element_text(size=18),
+        axis.title=element_text(size=18,face="bold")) +
+  scale_fill_manual(values=c("above"="#0f2350","below"="#507ea4")) +
+  geom_bar(stat = "identity",position = "dodge") +
+  #scale_y_continuous(labels=scaleFUN) + #軸に少数点以下の数字を入れるコード
+  theme(legend.position = 'none')
+
+print(g1)
+
+### fmsy/sq
+
+dt.comp2_r$rate <- (dt.comp2_r$FMSY/dt.comp2_r$SQ)-1
+max_r <- max(dt.comp2_r$rate)
+min_r <- min(dt.comp2_r$rate)
+dt.comp2_r$Rate <- ifelse(dt.comp2_r$rate < 0, "below", "above")
+if(min_r>0){min_r <- 0}else{min_r <- cutcut(min_r,digits=2)}
+
+#dt.comp2_r_stack <- dt.comp2_r_stack %>%
+  #filter( alphabet_pref == "iwate" | alphabet_pref == "miyagi" | alphabet_pref == "aomori")
+#dt.comp2_r_stack <- left_join(dt.comp2_r_stack,translation_pref_remove_na,by=c("alphabet_pref"="alphabet"))
+#dt.comp2_r_stack$prefecture <- factor(dt.comp2_r_stack$prefecture,levels = c("青森","岩手","宮城"))
+g2 <- ggplot(dt.comp2_r, aes(x = time,y = rate, fill = Rate)) +
+  theme_light(base_family = "HiraKakuPro-W3") + 
+  labs(x="年", y="割合") +
+  labs(title = comp_name2) +
+  #ylim(min_r,max_r) +
+  theme(axis.text=element_text(size=18),
+        axis.title=element_text(size=18,face="bold")) +
+  scale_fill_manual(values=c("above"="#00552e","below"="#68be8d")) +
+  geom_bar(stat = "identity",position = "dodge") +
+  #facet_wrap(~prefecture) +
+  #scale_y_continuous(labels=scaleFUN) +
+  theme(legend.position = 'none')
+
+print(g2)
+
+
+# Extraction of maximum and minimum values  
+max_h <- max(dt.comp2$total_harvest)
+min_h <- min(dt.comp2$total_harvest)
+min_h <- as.integer(floor(min_h))
+asp = 1
+data1<-ggplot(data = dt.comp2,mapping=aes(x=time,y=total_harvest,group=factor(management),colour=factor(management),shape = management)) +
+  theme_light(base_family = "HiraKakuPro-W3") + 
+  xlab("年") +
+  ylab("漁獲量(1000t)") +
+  labs(colour = "Management") +
+  labs(title = comp_name3) +
+  xlim(0,50) +
+  #geom_vline(xintercept=reach_year,colour="red") +
+  ylim(0,max_h) +
+  geom_line() +
+  scale_color_manual(values=c("FMSY"="#35a16b","SQ"="#ff2800","econOpt"="#0041ff")) +
+  theme(axis.text=element_text(size=18),
+        axis.title=element_text(size=18,face="bold")) +
+  geom_point() +
+  
+  theme(legend.position = 'none')
+print(data1)
+
+if(Temp_User==1){setwd("/Users/keikawamura/Google ドライブ/Upside_グラフ集/Section7_ Upside県別データ(harvest) ")}else if(Temp_User==2){setwd("~/Dropbox/#_0_gakuGroup/Upside_Kei.K/Output")}else if(Temp_User==3){setwd("C:/Users/aquak/Dropbox/Upside_Kei.K/timeseries/prefecture/harvest")}
+
+File_name<-paste("harvest_",comp_name,".png",sep = "")
+#ggsave(filename = File_name)
+if(comp_name=="hokkaido"){dt.comp2_stack<-dt.comp2}
+dt.comp2_stack <- rbind(dt.comp2,dt.comp2_stack)
+}
+```
+
+## Section 8  Upside県別データ(profit)
+単位は1million(100万)にする
+()内はプロット時の急激なスパイクの原因となる魚種
+*aomori (sea_cucumber_single_stock)
+*niigata (sea_cucumber_single_stock)
+*aichi (manila_clam_single_stock) 
+*hyogo (sea_cucumber_single_stock)
+*miyazaki (round_herring_pacific_stock)
+```{r}
+options(scipen=999)
+theme_set(theme_bw())
+if(Temp_User==1){setwd("/Users/keikawamura/Dropbox/Upside_Kei.K/Upside_project/Current_Working_Data/timeseries/prefecture/profit")}else if
+(Temp_User==2){setwd("~/Dropbox/#_0_gakuGroup/Upside_Kei.K/Output")}else if
+(Temp_User==3){setwd("C:/Users/aquak/Dropbox/Upside_Kei.K/timeseries/prefecture/profit")}
+
+dt.comp$alphabet_pref<-as.character(dt.comp$alphabet_pref)
+translation_pref$alphabet<-as.character(translation_pref$alphabet)
+
+#dt.comp1<-dt.comp %>%
+# filter(!fish_stock=="round_herring_pacific_stock") 
+
+for (n in 1:nrow(translation_pref_remove_na)) {
+  comp_name=translation_pref_remove_na[n,2]
+
+  dt.comp2.1<-dt.comp1 %>%
+  filter(alphabet_pref==comp_name) %>%
+  filter(management=="FMSY")
+dt.comp2.2<-dt.comp1 %>%
+  filter(alphabet_pref==comp_name) %>%
+  filter(management=="SQ")
+dt.comp2.3<-dt.comp1 %>%
+  filter(alphabet_pref==comp_name) %>%
+  filter(management=="econOpt")
+dt.comp2.4<-rbind(dt.comp2.1,dt.comp2.2,dt.comp2.3)
+dt.comp2<-dt.comp2.4 %>%
+  group_by(management,time) %>%
+  summarise(total_profit = (sum(pref_value))*110) %>% # Currency conversion $ -> ¥
+  ungroup()
+dt.comp2$total_profit <- dt.comp2$total_profit/1000000
+  
+comp_name2<-paste(comp_name,"profit",sep="_")
+max_p <- max(dt.comp2$total_profit)
+min_p <- min(dt.comp2$total_profit)
+
+#y軸の上限は神奈川県、下限は沖縄県に合わせている。
+data1<-ggplot(data = dt.comp2,mapping=aes(x=time,y=total_profit,group=factor(management),colour=factor(management),shape = management)) +
+  theme_light(base_family = "HiraKakuPro-W3") + 
+  xlab("年") +
+  ylab("利益_100万") +
+  labs(colour = "Management") +
+  labs(title = comp_name2) +
+  xlim(0,50) +
+  ylim(min_p,max_p) +
+  geom_line() +
+  scale_color_manual(values=c("FMSY"="#35a16b","SQ"="#ff2800","econOpt"="#0041ff")) +
+  theme(axis.text=element_text(size=18),
+        axis.title=element_text(size=18,face="bold")) +
+  theme(legend.position = 'none') +
+  geom_point()
+print(data1)
+
+if(Temp_User==1){setwd("/Users/keikawamura/Google ドライブ/Upside_グラフ集/Section8_Upside県別データ(profit)")}else if
+(Temp_User==2){setwd("~/Dropbox/#_0_gakuGroup/Upside_Kei.K/Output")}else if
+(Temp_User==3){setwd("C:/Users/aquak/Dropbox/Upside_Kei.K/timeseries/prefecture/profit")}
+
+File_name<-paste("profit_",comp_name,".png",sep = "")
+#ggsave(filename = File_name) 
+
+
+}
+
+```
+
+## Section 9  Upside地図(harvest)
+
+地図作成に用いるchoroplethrは拡張機能が乏しく、任意の範囲・区間での色分け等が行えないので、任意の範囲・区間のものに新たな値を付与し、その値ごとに色分けを行う必要がある。
+(参照データフレーム ; dt.rate_h)
+
+```{r}
+#### Plot about harvest
+#空のデータフレームを作成
+dt.comp3_h<-0
+
+#以下のコードの説明は先述したので省略
+for (n in 1:nrow(translation_pref_remove_na)) {
+  comp_name=translation_pref_remove_na[n,2]
+  
+dt.comp2.1<-dt.comp1 %>%
+  filter(alphabet_pref==comp_name) %>%
+  filter(management=="FMSY")
+dt.comp2.2<-dt.comp1 %>%
+  filter(alphabet_pref==comp_name) %>%
+  filter(management=="SQ")
+dt.comp2.3<-dt.comp1 %>%
+  filter(alphabet_pref==comp_name) %>%
+  filter(management=="econOpt")
+dt.comp2.4<-rbind(dt.comp2.1,dt.comp2.2,dt.comp2.3)
+dt.comp2<-dt.comp2.4 %>%
+  group_by(management,time,alphabet_pref) %>%
+  summarise(total_harvest = sum(pref_catch)) %>%
+  ungroup()
+  
+if(n==1){dt.comp3_h<-dt.comp2}else
+  {dt.comp3_h<-rbind(dt.comp3_h,dt.comp2)}
+
+}
+
+#timeが50の時のデータを抽出
+dt.comp7_50 <- dt.comp3_h %>%
+  filter(time=="50")%>%
+  tidyr::spread(management,total_harvest)
+
+#50年時にFMSYが漁獲量最大になる県にFMSYを新たな列bestに代入
+dt.comp7_50_1 <- dt.comp7_50 %>%
+  filter(FMSY > SQ & FMSY > econOpt) %>%
+  mutate(best = "FMSY")
+
+#50年時にeconOptが漁獲量最大になる県にeconOptを新たな列bestに代入
+dt.comp7_50_2 <- dt.comp7_50 %>%
+  filter(econOpt > SQ & econOpt > FMSY) %>%
+  mutate(best = "econOpt")
+
+#50年時にSQが漁獲量最大になる県にSQを新たな列bestに代入
+dt.comp7_50_3 <- dt.comp7_50 %>%
+  filter(SQ > FMSY & SQ > econOpt ) %>%
+  mutate(best = "SQ")
+
+#3つのデータを列結合してdt.comp7_50_comp_hに格納
+dt.comp7_50_comp_h <- data.frame(rbind(dt.comp7_50_1,dt.comp7_50_2,dt.comp7_50_3))
+
+#dt.comp7に県・政策ごとの合計漁獲数を新たな列sumとして追加し、その後sqに対するecoOpt,fmsyの比を新たな列として追加したデータフレームを格納。つまり、先程のデータフレームはtimeが50の時であったが今回は全年数時での最適な政策を発見したい。
+dt.comp7 <- dt.comp3_h %>%
+  group_by(alphabet_pref,management) %>%
+  summarise(sum = sum(total_harvest)) %>%
+  tidyr::spread(management,sum) %>%
+  mutate(econOpt_SQ = econOpt/SQ ) %>%
+  mutate(FMSY_SQ = FMSY/SQ)
+
+#漁獲量においてFMSY政策が最大化する県に値FMSYを列bestに付与
+dt.comp7_1 <- dt.comp7 %>%
+  filter(FMSY > SQ & FMSY > econOpt) %>%
+  mutate(best = "FMSY")
+
+#漁獲量においてeconOpt政策が最大化する県に値econOptを列bestに付与
+dt.comp7_2 <- dt.comp7 %>%
+  filter(econOpt > SQ & econOpt > FMSY) %>%
+  mutate(best = "econOpt")
+
+#漁獲量においてSQ政策が最大化する県に値SQを列bestに付与
+dt.comp7_3 <- dt.comp7 %>%
+  filter(SQ > FMSY & SQ > econOpt ) %>%
+  mutate(best = "SQ")
+
+#3つのデータを結合
+dt.comp7_comp_h <- data.frame(rbind(dt.comp7_1,dt.comp7_2,dt.comp7_3))
+
+#コロプレス図を書くためのパッケージ
+library("choroplethr")
+library("choroplethrAdmin1")
+library("RColorBrewer")
+
+
+if(Temp_User==1){setwd("/Users/keikawamura/Dropbox/Upside_Kei.K/Upside_project/Current_Working_Data/timeseries/map/harvest")}else if
+(Temp_User==2){setwd("~/Dropbox/#_0_gakuGroup/Upside_Kei.K/Output")}else if
+(Temp_User==3){setwd("C:/Users/aquak/Dropbox/Upside_Kei.K/timeseries/map/harvest")}
+
+#日本の白地図をjpnに格納。
+jpn <- admin1_map("japan")
+
+dt.spc<-data.frame(region = dt.comp7_comp_h[, 1], value = dt.comp7_comp_h[, 7])
+colnames(dt.spc)<-c("region","value")
+dt.spc$region<-as.character(dt.spc$region)
+dt.spc$value<-as.character(dt.spc$value)
+admin1_choropleth(country.name = "japan",
+                  df           = dt.spc,
+                  title        = "Optimal_harvest_total_50years",
+                  legend       = "management",
+                  num_colors   = ) +
+#ggplotとは異なり、choroplethr には拡張機能が乏しいため、色の変更はscale_fill_manualを用いる。棒グラフやコロプレス図のように色を塗るような場合はscale_fill_manualを用いる。一方で線や点の色分けの場合はscale_color_manualを用いる。
+scale_fill_manual(values=c("FMSY"="#35a16b","SQ"="#ff2800","econOpt"="#0041ff"))
+
+dt.spc<-data.frame(region = dt.comp7_50_comp_h[, 2], value = dt.comp7_50_comp_h[, 6])
+colnames(dt.spc)<-c("region","value")
+dt.spc$region<-as.character(dt.spc$region)
+dt.spc$value<-as.character(dt.spc$value)
+admin1_choropleth(country.name = "japan",
+                  df           = dt.spc,
+                  title        = "Optimal_harvest_50years_later",
+                  legend       = "management",
+                  num_colors   = ) + scale_fill_manual(values=c("FMSY"="#35a16b","SQ"="#ff2800","econOpt"="#0041ff"))
+
+for (n in 1:nrow(translation_pref_remove_na)) {
+  comp_name=translation_pref_remove_na[n,2]
+
+dt.comp8_h<-dt.comp3_h %>%
+  tidyr::spread(management,total_harvest) %>%
+  mutate(SQ_econOpt=econOpt/SQ) %>%
+  mutate(SQ_FMSY=FMSY/SQ) %>%
+  select(alphabet_pref,SQ_FMSY,SQ_econOpt,time) %>%
+  mutate(SQ=1) %>%
+  tidyr::gather(key=management,value=competition,SQ_FMSY,SQ_econOpt,SQ)
+
+comp_name2<-paste("harvest",comp_name,"axis_SQ",sep="_")
+}
+
+datatable(dt.comp8_h,rownames = FALSE,filter = 'top')
+
+```
+
+## Section 10 Upside地図(profit)
+
+（参照データフレーム ; dt.rate_p）
+```{R}
+#### plot about profit 
+dt.comp3<-0
+for (n in 1:nrow(translation_pref_remove_na)) {
+  comp_name=translation_pref_remove_na[n,2]
+  
+dt.comp2.1<-dt.comp1 %>%
+  filter(alphabet_pref==comp_name) %>%
+  filter(management=="FMSY")
+dt.comp2.2<-dt.comp1 %>%
+  filter(alphabet_pref==comp_name) %>%
+  filter(management=="SQ")
+dt.comp2.3<-dt.comp1 %>%
+  filter(alphabet_pref==comp_name) %>%
+  filter(management=="econOpt")
+dt.comp2.4<-rbind(dt.comp2.1,dt.comp2.2,dt.comp2.3)
+dt.comp2<-dt.comp2.4 %>%  
+  group_by(management,time,alphabet_pref) %>%
+  summarise(total_profit = sum(pref_value)) %>%
+  ungroup()
+
+if(n==1){dt.comp3<-dt.comp2}else
+  {dt.comp3<-rbind(dt.comp3,dt.comp2)}
+
+}
+
+dt.comp7_50 <- dt.comp3 %>%
+  filter(time=="50")%>%
+  tidyr::spread(management,total_profit)
+
+dt.comp7_50_1 <- dt.comp7_50 %>%
+  filter(FMSY > SQ & FMSY > econOpt) %>%
+  mutate(best = "FMSY")
+
+dt.comp7_50_2 <- dt.comp7_50 %>%
+  filter(econOpt > SQ & econOpt > FMSY) %>%
+  mutate(best = "econOpt")
+
+dt.comp7_50_3 <- dt.comp7_50 %>%
+  filter(SQ > FMSY & SQ > econOpt ) %>%
+  mutate(best = "SQ")
+
+dt.comp7_50_comp_p <- data.frame(rbind(dt.comp7_50_1,dt.comp7_50_2,dt.comp7_50_3))
+
+
+dt.comp7 <- dt.comp3 %>%
+  group_by(alphabet_pref,management) %>%
+  summarise(sum = sum(total_profit)) %>%
+  tidyr::spread(management,sum) %>%
+  mutate(econOpt_SQ = econOpt/SQ ) %>%
+  mutate(FMSY_SQ = FMSY/SQ)
+
+dt.comp7_1 <- dt.comp7 %>%
+  filter(FMSY > SQ & FMSY > econOpt) %>%
+  mutate(best = "FMSY")
+
+dt.comp7_2 <- dt.comp7 %>%
+  filter(econOpt > SQ & econOpt > FMSY) %>%
+  mutate(best = "econOpt")
+
+dt.comp7_3 <- dt.comp7 %>%
+  filter(SQ > FMSY & SQ > econOpt ) %>%
+  mutate(best = "SQ")
+
+dt.comp7_comp_p <- data.frame(rbind(dt.comp7_1,dt.comp7_2,dt.comp7_3))
+
+if(Temp_User==1){setwd("/Users/keikawamura/Dropbox/Upside_Kei.K/Upside_project/Current_Working_Data/timeseries/map/profit")}else if
+(Temp_User==2){setwd("~/Dropbox/#_0_gakuGroup/Upside_Kei.K/Output")}else if
+(Temp_User==3){setwd("C:/Users/aquak/Dropbox/Upside_Kei.K/timeseries/map/plofit")}
+
+dt.spc<-data.frame(region = dt.comp7_comp_p[, 1], value = dt.comp7_comp_p[, 7])
+colnames(dt.spc)<-c("region","value")
+dt.spc$region<-as.character(dt.spc$region)
+dt.spc$value<-as.character(dt.spc$value)
+admin1_choropleth(country.name = "japan",
+                  df           = dt.spc,
+                  title        = "Optimal_profit_total_50years",
+                  legend       = "Management",
+                  num_colors   = 3) + scale_fill_manual(values=c("FMSY"="#35a16b","SQ"="#ff2800","econOpt"="#0041ff"))
+
+
+dt.spc<-data.frame(region = dt.comp7_50_comp_p[, 2], value = dt.comp7_50_comp_p[, 6])
+colnames(dt.spc)<-c("region","value")
+dt.spc$region<-as.character(dt.spc$region)
+dt.spc$value<-as.character(dt.spc$value)
+admin1_choropleth(country.name = "japan",
+                  df           = dt.spc,
+                  title        = "Optimal_profit_50years_later",
+                  legend       = "Management",
+                  num_colors   = 3) + scale_fill_manual(values=c("FMSY"="#35a16b","SQ"="#ff2800","econOpt"="#0041ff"))
+
+for (n in 1:nrow(translation_pref_remove_na)) {
+  comp_name=translation_pref_remove_na[n,2]
+
+dt.comp8_p<-dt.comp3 %>%
+  tidyr::spread(management,total_profit) %>%
+  mutate(SQ_econOpt=econOpt/SQ) %>%
+  mutate(SQ_FMSY=FMSY/SQ) %>%
+  select(alphabet_pref,SQ_FMSY,SQ_econOpt,time) %>%
+  mutate(SQ=1) %>%
+  tidyr::gather(key=management,value=competition,SQ_FMSY,SQ_econOpt,SQ) }
+
+datatable(dt.comp8_p,rownames = FALSE,filter = 'top')
+
+```
+
+## Section 11 Managementごとのトップ10の作成
+ 平均で計算(mean)
+```{r}
+#空のデータフレームdt.comp11を作成
+dt.comp11<-0
+
+for (n in 1:nrow(translation_pref_remove_na)) {
+  comp_name=translation_pref_remove_na[n,2]
+
+#SQ政策かつ任意の県のデータを抽出し、平均漁獲量を計算(harvest_SQ)
+dt.comp9<-dt.comp1 %>%
+  filter(management==c("SQ") & alphabet_pref==comp_name) %>%
+  group_by(fish_stock) %>%
+  mutate(harvest_SQ = mean(pref_catch)) %>%
+  ungroup() %>%
+  select(alphabet_pref,fish_stock,harvest_SQ) %>%
+  unique()
+
+#dt.comp10にdt.comp9を降順に整列させ、先頭10個のデータを抽出し、順位の番号を振る
+dt.comp10<-dt.comp9[order(desc(dt.comp9$harvest_SQ)),] %>%
+  head(10) %>%
+  dplyr::mutate(rank_number=row_number(desc(harvest_SQ)))
+
+if(n==1){dt.comp11<-dt.comp10}
+else{dt.comp11<-rbind(dt.comp11,dt.comp10)}
+
+
+}
+
+if(Temp_User==1){setwd("/Users/keikawamura/Google ドライブ/Upside_Kei/Upside_project/Current_Working_Data/Datasets")}else if
+(Temp_User==2){setwd("~/Dropbox/#_0_gakuGroup/Upside_Kei.K")}else if
+(Temp_User==3){setwd("C:/Users/aquak/Dropbox/Upside_Kei.K")}
+
+
+#write.csv(dt.comp11, file= "Upside_rank_SQ.csv" ,fileEncoding = "CP932")
+#コードを書かずに上記のシナリオ選択部分をSQから手動で他の政策に切り替え、アウトプットしたものを再度呼び込んでいる
+rank_SQ<-read_csv("Upside_rank_SQ.csv")
+rank_FMSY<-read_csv("Upside_rank_FMSY.csv")
+rank_econOpt<-read_csv("Upside_rank_econOpt.csv")
+rank_SQ <- rank_SQ %>%
+  dplyr::select(alphabet_pref,fish_stock,harvest_SQ,rank_number)
+rank_FMSY <- rank_FMSY%>%
+  dplyr::select(alphabet_pref,fish_stock,harvest_FMSY,rank_number)
+rank_econOpt <- rank_econOpt %>%
+  dplyr::select(alphabet_pref,fish_stock,harvest_econOpt,rank_number)
+
+DT::datatable(rank_SQ,rownames = FALSE, colnames = c("alphabet_pref","fish_stock","harvest_SQ","rank_number"), caption = "Rank_SQ",filter = 'top')
+DT::datatable(rank_FMSY,rownames = FALSE, colnames = c("alphabet_pref","fish_stock","harvest_FMSY","rank_number"), caption = "Rank_FMSY",filter = 'top')
+DT::datatable(rank_econOpt,rownames = FALSE, colnames = c("alphabet_pref","fish_stock","harvest_econOpt","rank_number"), caption = "Rank_econOpt",filter = 'top')
+```
+
+## Section 12 大海区ごとのデータ
+
+```{r}
+if(Temp_User==1){setwd("/Users/keikawamura/Dropbox/Upside_Kei.K/Upside_project/Current_Working_Data/Datasets")}else if
+(Temp_User==2){setwd("~/Dropbox/#_0_gakuGroup/Upside_Kei.K")}else if
+(Temp_User==3){setwd("C:/Users/aquak/Dropbox/Upside_Kei.K")}
+
+#空のデータフレームregion1を作成
+region1<-0
+
+for (n in 1:nrow(translation_pref_remove_na)) {
+  comp_name=translation_pref_remove_na[n,2]
+
+#region2にSQ,FMSY,econOptの県別の総漁獲量を計算し格納、その後region1に全県分格納
+region2<-dt.comp1 %>%
+  filter(alphabet_pref==comp_name) %>%
+  filter(management=="SQ"|management=="FMSY"|management=="econOpt") %>%
+  group_by(alphabet_pref,time) %>%
+  mutate(total_kaiku_h = sum(pref_catch)) %>%
+  mutate(total_kaiku_p = sum(pref_value)) %>%
+  select("alphabet_pref","total_kaiku_h","total_kaiku_p","time","management")
+region2<-unique(region2)
+  
+if(n==1){region1<-region2}else{region1<-rbind(region1,region2)}  
+
+}
+
+region5<-read.csv("translation_prefecture_region.csv")
+region6<-dt.comp1 %>%
+  select("fish_stock","fishery","management","alphabet_pref","time","harvest1","profit1","biomass","pref_catch","pref_value")
+region6<-merge(region6,region5,by = "alphabet_pref")
+
+#rateはその県が1つの海区に属すか否かの値である。rate=1.0は単一海区に属す県、rate=0.5は複数海区に属す県。複数海区に属す県の場合は漁獲量に0.5をかけて分けあう。
+region6$harvest3<-region6$pref_catch*region6$rate
+region6$profit3<-region6$pref_value*region6$rate
+
+#政策をSQ,FMSY,econOptに絞り、海区ごとの総漁獲量・総産出額を計算
+region6<-region6 %>%
+  filter(management=="SQ"|management=="FMSY"|management=="econOpt") %>%
+  group_by(management,time,region) %>%
+  mutate(harvest_kaiku = sum(harvest3)) %>%
+  mutate(profit_kaiku = sum(profit3)) %>%
+  ungroup()
+
+#海区のリスト
+region_list<-data.frame(region=unique(region5$region_name))
+region_list<-as.character(region_list$region)
+region_list<-data_frame(region_list)
+region_list<-data.frame(region_list[-9,])
+
+### plot harvest 
+if(Temp_User==1){setwd("/Users/keikawamura/Google ドライブ/Upside_グラフ集/Section12_大海区ごとのデータ/Harvest")}else if
+(Temp_User==2){setwd("~/Dropbox/#_0_gakuGroup/Upside_Kei.K/Output")}else if
+(Temp_User==3){setwd("C:/Users/aquak/Dropbox/Upside_Kei.K/timeseries/kaiku/harvest")}
+
+
+for (n in 1:nrow(region_list)) {
+  region_Name=region_list[n,1]
+  
+
+region7<-region6 %>%
+  filter(region_name==region_Name) %>%
+  select("time","management","harvest_kaiku","profit_kaiku")
+region7<-unique(region7)
+  
+region_name2<-paste(region_Name,"harvest",sep="_")
+
+max_k <- max(region7$harvest_kaiku)
+min_k <- min(region7$harvest_kaiku)
+
+data_reg1<-ggplot(data = region7,mapping=aes(x=time,y=harvest_kaiku,group=factor(management),colour=factor(management))) +
+  labs(title = region_name2) +
+  xlab("Time") +
+  ylab("Harvest") +
+  labs(colour = "Management") +
+  xlim(0,50) +
+  ylim(min_k,max_k) +
+  geom_line() +
+  geom_point() +
+  theme(axis.text=element_text(size=18),
+        axis.title=element_text(size=14,face="bold")) +
+  scale_color_manual(values=c("FMSY"="#35a16b","SQ"="#ff2800","econOpt"="#0041ff"))
+print(data_reg1)
+
+File_name<-paste("harvest_kaiku_",region_Name,".png",sep = "")
+#ggsave(filename = File_name) 
+
+
+}
+
+### plot profit
+if(Temp_User==1){setwd("/Users/keikawamura/Google ドライブ/Upside_グラフ集/Section12_大海区ごとのデータ/Profit")}else if
+(Temp_User==2){setwd("~/Dropbox/#_0_gakuGroup/Upside_Kei.K/Output")}else if
+(Temp_User==3){setwd("C:/Users/aquak/Dropbox/Upside_Kei.K/timeseries/kaiku/plofit")}
+
+
+for (n in 1:nrow(region_list)) {
+  region_Name=region_list[n,1]
+  
+
+region7<-region6 %>%
+  filter(region_name==region_Name)%>%
+  select("time","management","harvest_kaiku","profit_kaiku")
+region7<-unique(region7)
+  
+region_name2<-paste(region_Name,"profit",sep="_")
+
+max_k <- max(region7$profit_kaiku)
+min_k <- min(region7$profit_kaiku)
+
+data_reg1<-ggplot(data = region7,mapping=aes(x=time,y=profit_kaiku,group=factor(management),colour=factor(management))) +
+  xlab("Time") +
+  ylab("Profit") +
+  labs(colour = "Management") +
+  labs(title = region_name2) +
+  xlim(0,50) +
+  ylim(min_k,max_k) +
+  geom_line() +
+  geom_point() +
+  theme(axis.text=element_text(size=18),
+        axis.title=element_text(size=14,face="bold")) +
+  scale_color_manual(values=c("FMSY"="#35a16b","SQ"="#ff2800","econOpt"="#0041ff"))
+print(data_reg1)
+
+File_name<-paste("profit_kaiku_",region_Name,".png",sep = "")
+#ggsave(filename = File_name) 
+
+
+}
+```
+
+## Section13 魚種ごとのデータ {.tabset .tabset-fade}
+
+### Harvest
+
+```{r}
+#### Plot about harvest
+if(Temp_User==1){setwd("/Users/keikawamura/Google ドライブ/Upside_グラフ集/Section13_魚種ごとのデータ/Harvest")}else if
+(Temp_User==2){setwd("~/Dropbox/#_0_gakuGroup/Upside_Kei.K/Output")}else if
+(Temp_User==3){setwd("C:/Users/aquak/Dropbox/Upside_Kei.K/timeseries/fish_stock/harvest")}
+
+fish_list<-data.frame(fish_stock=unique(dt.comp$fish_stock))
+fish_list$fish_stock<-as.character(fish_list$fish_stock)
+
+
+
+for (n in 1:nrow(fish_list)) {
+  fish_name=fish_list[n,1]
+  
+
+fish1<-dt.comp1 %>%
+  filter(management=="econOpt"|management=="FMSY"|management=="SQ") %>%
+  filter(fish_stock==fish_name) %>%
+  group_by(management,time) %>%
+  mutate(fish_total_harvest = sum(pref_catch)) %>%
+  ungroup() %>%
+  select("time","fish_total_harvest","management")
+fish2<-unique(fish1)
+
+fish_name1<-paste(fish_name,"harvest",sep="_")
+
+
+max_fish <- max(fish2$fish_total_harvest)
+min_fish <- min(fish2$fish_total_harvest)
+
+data_fish1<-ggplot(data = fish2,mapping=aes(x=time,y=fish_total_harvest,group=factor(management),colour=factor(management))) +
+  xlab("Time") +
+  ylab("Harvest") +
+  labs(colour = "Management") +
+  labs(title = fish_name1) +
+  xlim(0,50) +
+  ylim(min_fish,max_fish) +
+  geom_line() +
+  theme(axis.text=element_text(size=18),
+        axis.title=element_text(size=14,face="bold")) +
+  scale_color_manual(values=c("FMSY"="#35a16b","SQ"="#ff2800","econOpt"="#0041ff")) +
+  geom_point()
+print(data_fish1)
+
+File_name<-paste("harvest_",fish_name,".png",sep = "")
+#ggsave(filename = File_name) 
+
+}
+```
+
+### Profit
+
+```{r}
+if(Temp_User==1){setwd("/Users/keikawamura/Google ドライブ/Upside_グラフ集/Section13_魚種ごとのデータ/Profit")}else if
+(Temp_User==2){setwd("~/Dropbox/#_0_gakuGroup/Upside_Kei.K/Output")}else if
+(Temp_User==3){setwd("C:/Users/aquak/Dropbox/Upside_Kei.K/timeseries/fish_stock/plofit")}
+
+fish_list<-data.frame(fish_stock=unique(dt.comp$fish_stock))
+fish_list$fish_stock<-as.character(fish_list$fish_stock)
+
+
+
+for (n in 1:nrow(fish_list)) {
+  fish_name=fish_list[n,1]
+  
+
+fish1<-dt.comp1 %>%
+  filter(management=="econOpt"|management=="FMSY"|management=="SQ") %>%
+  filter(fish_stock==fish_name) %>%
+  group_by(management,time) %>%
+  mutate(fish_total_profit = sum(pref_value)) %>%
+  ungroup() %>%
+  select("time","fish_total_profit","management")
+fish2<-unique(fish1)
+
+fish_name1<-paste(fish_name,"profit",sep="_")
+
+max_fish <- max(fish2$fish_total_profit)
+min_fish <- min(fish2$fish_total_profit)
+
+data_fish1<-ggplot(data = fish2,mapping=aes(x=time,y=fish_total_profit,group=factor(management),colour=factor(management))) +
+  xlab("Time") +
+  ylab("Profit") +
+  labs(colour = "Management") +
+  labs(title = fish_name1) +
+  xlim(0,50) +
+  ylim(min_fish,max_fish) +
+  geom_line() +
+  geom_point() +
+  theme(axis.text=element_text(size=18),
+        axis.title=element_text(size=14,face="bold")) +
+  scale_color_manual(values=c("FMSY"="#35a16b","SQ"="#ff2800","econOpt"="#0041ff"))
+print(data_fish1)
+
+File_name<-paste("profit_",fish_name,".png",sep = "")
+#ggsave(filename = File_name) 
+
+}
+
+```
+
+## Section 14 ランキングデータの結合 {.tabset .tabset-fade}
+
+### Harvest
+
+```{r}
+rank_past<-0
+translation_pref_remove_na$prefecture<-as.character(translation_pref_remove_na$prefecture)
+
+for (n in 1:nrow(translation_pref_remove_na)) {
+  comp_name=translation_pref_remove_na[n,1]
+
+dt.comp13<-dt.weight %>%
+  filter(prefecture==comp_name) %>%
+  group_by(fish_stock) %>%
+  mutate(harvest_past = mean(weight_t)) %>%
+  ungroup() %>%
+  select(prefecture,fish_stock,harvest_past) 
+
+dt.comp13<-unique(dt.comp13)
+
+dt.comp14<-dt.comp13[order(dt.comp13$harvest_past),]
+
+dt.comp14<-dt.comp14 %>%
+  dplyr::arrange(desc(harvest_past)) %>%
+  head(10)
+
+colnames(dt.comp14) <- c("prefecture","fish_past","harvest_past")
+
+dt.comp14 <- dt.comp14 %>%
+  dplyr::mutate(rank_number=row_number(desc(harvest_past)))
+
+if(n==1){rank_past<-dt.comp14}
+else{rank_past<-rbind(rank_past,dt.comp14)}
+
+
+}
+
+rank_past$prefecture <- as.character(rank_past$prefecture)
+rank_past <- rank_past %>%
+  left_join(translation_pref_remove_na,by="prefecture") %>%
+  select(alphabet,fish_past,harvest_past,rank_number)
+names(rank_past)[1]<-"alphabet_pref"
+
+rank_all <- rank_past %>%
+  left_join(rank_econOpt,by=c("alphabet_pref","rank_number")) %>%
+  left_join(rank_FMSY,by=c("alphabet_pref","rank_number")) %>%
+  left_join(rank_SQ,by=c("alphabet_pref","rank_number"))
+
+
+if(Temp_User==1){setwd("/Users/keikawamura/Dropbox/Upside_Kei.K/Upside_project/Current_Working_Data")}else if
+(Temp_User==2){setwd("~/Dropbox/#_0_gakuGroup/Upside_Kei.K")}else if
+(Temp_User==3){setwd("C:/Users/aquak/Dropbox/Upside_Kei.K")}
+
+DT::datatable(rank_all,rownames = FALSE, colnames = c("alphabet_pref","fish_past","harvest_past","rank_number","fish_stock.x","harvest_econOpt","fish_stock.y","harvest_FMSY","fish_stock","harvest_SQ"), caption = "Rank_all")
+
+```
+
+### Profit
+
+```{r}
+for (n in 1:nrow(translation_pref_remove_na)) {
+  comp_name=translation_pref_remove_na[n,2]
+# Unit is 1億
+dt.comp14<-dt.comp1 %>%
+  filter(alphabet_pref==comp_name) %>%
+  filter(management=="econOpt" | management=="SQ" | management=="FMSY") %>%
+  group_by(management,fish_stock) %>%
+  mutate(mean=(mean(profit1)*110)/100000000) %>%
+  ungroup() %>%
+  select(fish_stock,mean,alphabet_pref) %>%
+  unique() %>%
+  dplyr::arrange(desc(mean)) %>%
+  head(10)
+
+dt.comp14 <- dt.comp14 %>%
+  dplyr::mutate(rank_number=row_number(desc(mean)))
+
+if(n==1){rank_profit<-dt.comp14}else{rank_profit<-rbind(rank_profit,dt.comp14)}
+
+}
+
+DT::datatable(rank_profit,rownames = FALSE, colnames = c("fish_stock","mean","alphabet_pref","rank"), caption = "Rank_all")
+
+```
+
+## Section 15 NPV(Net Present Value)の算出 (NPVの単位は$1000000000 (1billion=10億))
+
+国土交通省の社会的割引率が0.04となっているため、これを基本軸として当研究での割引率を定める。当研究では0.02,0.04,0.06,0.08で行う。
+
+### NPV(Net Present Value)の算出 {.tabset .tabset-fade}
+
+#### 全魚種の場合の結果 (なまこはすでに除いてある)
+```{r}
+
+discRate <- data.frame(Rate=c("0.02","0.04","0.06","0.08"))
+
+discRate$Rate<-as.character(discRate$Rate) %>% as.numeric(discRate$Rate)
+
+npv1<-dt.comp1 %>%
+  dplyr::filter(management == "SQ"|management == "FMSY"|management == "econOpt") %>%
+  dplyr::filter(time<51) %>%
+  merge(discRate)
+
+npv2<-npv1 %>%
+  dplyr::group_by(alphabet_pref,management, time) %>%
+  dplyr::mutate(Year_Catch=sum(pref_catch),Year_Value=sum(pref_value)) %>%
+  dplyr::mutate(DiscountedValue=Year_Value*1/((1+Rate)^(time-1)))  %>%
+  select(alphabet_pref,management,time,Year_Catch,Year_Value,DiscountedValue,Rate) %>%
+  ungroup() %>%
+  unique()
+  
+
+
+npv_all<-npv2 %>%
+  dplyr::group_by(alphabet_pref,management,Rate) %>%
+  dplyr::summarize((PV=sum(DiscountedValue))/1000000000) %>%
+  tidyr::spread(management,-alphabet_pref) 
+
+opt_econOpt <- npv_all %>% 
+  dplyr::filter(econOpt > FMSY & econOpt > SQ) %>% 
+  mutate(Opt_scenario = "econOpt")
+
+opt_FMSY <- npv_all %>%
+  filter(FMSY > econOpt & FMSY > SQ ) %>%
+  mutate(Opt_scenario = "FMSY")
+
+opt_SQ <- npv_all %>% 
+  dplyr::filter(SQ > econOpt & SQ > FMSY) %>% 
+  mutate(Opt_scenario = "SQ")
+
+npv_all_comp <- data.frame(rbind(opt_econOpt,opt_FMSY,opt_SQ))
+
+DT::datatable(npv_all_comp,rownames = FALSE, colnames = c("alphabet_pref","Rate","econOpt","FMSY","SQ"), caption = "NPV")
+
+```
+
+#### 移動の少ない魚種を除いた場合の結果
+
+```{r}
+discRate <- data.frame(Rate=c("0.02","0.04","0.06","0.08"))
+discRate$Rate<-as.character(discRate$Rate) %>% as.numeric(discRate$Rate)
+
+npv1_rm<-dt.comp1 %>%
+  dplyr::filter(management == "SQ"|management == "FMSY"|management == "econOpt") %>%
+  dplyr::filter(time<31) %>%
+ # filter(!fish_stock=="abalone_single_stock") %>% #アワビ
+  filter(!fish_stock=="sea_urchin_single_stock") %>% # ウニ
+  #filter(!fish_stock=="sea_cucumber_single_stock") %>% # ナマコ
+  #filter(!fish_stock=="manila_clam_single_stock") %>% # アサリ
+  #filter(!fish_stock=="japanese_hard_clam_single_stock") %>% # ハマグリ
+  #filter(!fish_stock=="spiny_top_shell_single_stock") %>% # サザエ
+  #filter(!fish_stock=="scallop_single_stock") %>% #ホタテガイ
+  merge(discRate)
+
+npv2<-npv1_rm %>%
+  dplyr::group_by(alphabet_pref,management, time) %>%
+  dplyr::mutate(Year_Catch=sum(pref_catch),Year_Value=sum(pref_value)) %>%
+  dplyr::mutate(DiscountedValue=Year_Value*1/((1+Rate)^(time-1)))  %>%
+  select(alphabet_pref,management,time,Year_Catch,Year_Value,DiscountedValue,Rate) %>%
+  ungroup() %>%
+  unique()
+  
+
+
+npv_all<-npv2 %>%
+  dplyr::group_by(alphabet_pref,management,Rate) %>%
+  dplyr::summarize(PV=(sum(DiscountedValue))/1000000000) %>%
+  tidyr::spread(management,-alphabet_pref) 
+
+opt_econOpt <- npv_all %>% 
+  dplyr::filter(econOpt > FMSY & econOpt > SQ) %>% 
+  mutate(Opt_scenario = "econOpt")
+
+opt_FMSY <- npv_all %>%
+  filter(FMSY > econOpt & FMSY > SQ ) %>%
+  mutate(Opt_scenario = "FMSY")
+
+opt_SQ <- npv_all %>% 
+  dplyr::filter(SQ > econOpt & SQ > FMSY) %>% 
+  mutate(Opt_scenario = "SQ")
+
+npv_all_comp_rm <- data.frame(rbind(opt_econOpt,opt_FMSY,opt_SQ))
+
+DT::datatable(npv_all_comp_rm,rownames = FALSE, colnames = c("alphabet_pref","Rate","econOpt","FMSY","SQ"), caption = "NPV_remove")
+
+
+
+```
+
+#### 全魚種の場合の結果の日本地図 (なまこはすでに除いてある) {.tabset .tabset-fade}
+
+##### 0.02
+
+```{r echo = FALSE,eval=FALSE}
+
+npv0.02 <- dplyr::filter(npv_all_comp,Rate=="0.02")
+npv0.04 <- dplyr::filter(npv_all_comp,Rate=="0.04")
+npv0.06 <- dplyr::filter(npv_all_comp,Rate=="0.06")
+npv0.08 <- dplyr::filter(npv_all_comp,Rate=="0.08")
+
+dt.spc<-data.frame(region = npv0.02[, 1], value = npv0.02[, 6])
+colnames(dt.spc)<-c("region","value")
+dt.spc$region<-as.character(dt.spc$region)
+dt.spc$value<-as.character(dt.spc$value)
+admin1_choropleth(country.name = "japan",
+                  df           = dt.spc,
+                  title        = "Optimal_scenario_each_prefecture_NPV_DiscountRate0.02",
+                  legend       = "magnification",
+                  num_colors   = 3)+
+  scale_fill_manual(values=c("FMSY"="#35a16b","SQ"="#ff2800","econOpt"="#0041ff"))
+print(dt.spc)
+
+```
+
+##### 0.04
+
+```{r echo = FALSE,eval=FALSE}
+
+dt.spc<-data.frame(region = npv0.04[, 1], value = npv0.04[, 6])
+colnames(dt.spc)<-c("region","value")
+dt.spc$region<-as.character(dt.spc$region)
+dt.spc$value<-as.character(dt.spc$value)
+admin1_choropleth(country.name = "japan",
+                  df           = dt.spc,
+                  title        = "Optimal_scenario_each_prefecture_NPV_DiscountRate0.04",
+                  legend       = "magnification",
+                  num_colors   = 3)+
+  scale_fill_manual(values=c("FMSY"="#35a16b","SQ"="#ff2800","econOpt"="#0041ff"))
+print(dt.spc)
+```
+
+##### 0.06
+
+```{r echo = FALSE,eval=FALSE}
+dt.spc<-data.frame(region = npv0.06[, 1], value = npv0.06[, 6])
+colnames(dt.spc)<-c("region","value")
+dt.spc$region<-as.character(dt.spc$region)
+dt.spc$value<-as.character(dt.spc$value)
+admin1_choropleth(country.name = "japan",
+                  df           = dt.spc,
+                  title        = "Optimal_scenario_each_prefecture_NPV_DiscountRate0.06",
+                  legend       = "magnification",
+                  num_colors   = 3) +
+  scale_fill_manual(values=c("FMSY"="#35a16b","SQ"="#ff2800","econOpt"="#0041ff"))
+print(dt.spc)
+```
+
+##### 0.08
+
+```{r echo = FALSE,eval=FALSE}
+dt.spc<-data.frame(region = npv0.08[, 1], value = npv0.08[, 6])
+colnames(dt.spc)<-c("region","value")
+dt.spc$region<-as.character(dt.spc$region)
+dt.spc$value<-as.character(dt.spc$value)
+admin1_choropleth(country.name = "japan",
+                  df           = dt.spc,
+                  title        = "Optimal_scenario_each_prefecture_NPV_DiscountRate0.08",
+                  legend       = "magnification",
+                  num_colors   = 3) +
+  scale_fill_manual(values=c("FMSY"="#35a16b","SQ"="#ff2800","econOpt"="#0041ff"))
+print(dt.spc)
+```
+
+#### 移動の少ない魚種を除いた場合の結果の日本地図 {.tabset .tabset-fade}
+
+##### 0.02
+
+```{r echo = FALSE,eval=FALSE}
+
+npv0.02 <- dplyr::filter(npv_all_comp_rm,Rate=="0.02")
+npv0.04 <- dplyr::filter(npv_all_comp_rm,Rate=="0.04")
+npv0.06 <- dplyr::filter(npv_all_comp_rm,Rate=="0.06")
+npv0.08 <- dplyr::filter(npv_all_comp_rm,Rate=="0.08")
+
+dt.spc<-data.frame(region = npv0.02[, 1], value = npv0.02[, 6])
+colnames(dt.spc)<-c("region","value")
+dt.spc$region<-as.character(dt.spc$region)
+dt.spc$value<-as.character(dt.spc$value)
+admin1_choropleth(country.name = "japan",
+                  df           = dt.spc,
+                  title        = "Optimal_scenario_each_prefecture_NPV_DiscountRate0.02_remove",
+                  legend       = "magnification",
+                  num_colors   = 3) +
+  scale_fill_manual(values=c("FMSY"="#35a16b","SQ"="#ff2800","econOpt"="#0041ff"))
+print(dt.spc)
+
+```
+
+##### 0.04
+
+```{r echo = FALSE,eval=FALSE}
+
+dt.spc<-data.frame(region = npv0.04[, 1], value = npv0.04[, 6])
+colnames(dt.spc)<-c("region","value")
+dt.spc$region<-as.character(dt.spc$region)
+dt.spc$value<-as.character(dt.spc$value)
+admin1_choropleth(country.name = "japan",
+                  df           = dt.spc,
+                  title        = "Optimal_scenario_each_prefecture_NPV_DiscountRate0.04_remove",
+                  legend       = "magnification",
+                  num_colors   = 3) +
+  scale_fill_manual(values=c("FMSY"="#35a16b","SQ"="#ff2800","econOpt"="#0041ff")) 
+print(dt.spc)
+```
+
+##### 0.06
+
+```{r echo = FALSE,eval=FALSE}
+dt.spc<-data.frame(region = npv0.06[, 1], value = npv0.06[, 6])
+colnames(dt.spc)<-c("region","value")
+dt.spc$region<-as.character(dt.spc$region)
+dt.spc$value<-as.character(dt.spc$value)
+admin1_choropleth(country.name = "japan",
+                  df           = dt.spc,
+                  title        = "Optimal_scenario_each_prefecture_NPV_DiscountRate0.06_remove",
+                  legend       = "magnification",
+                  num_colors   = 3) +
+  scale_fill_manual(values=c("FMSY"="#35a16b","SQ"="#ff2800","econOpt"="#0041ff"))
+print(dt.spc)
+```
+
+##### 0.08
+
+```{r echo = FALSE,eval=FALSE}
+dt.spc<-data.frame(region = npv0.08[, 1], value = npv0.08[, 6])
+colnames(dt.spc)<-c("region","value")
+dt.spc$region<-as.character(dt.spc$region)
+dt.spc$value<-as.character(dt.spc$value)
+admin1_choropleth(country.name = "japan",
+                  df           = dt.spc,
+                  title        = "Optimal_scenario_each_prefecture_NPV_DiscountRate0.08_remove",
+                  legend       = "magnification",
+                  num_colors   = 3) +
+  scale_fill_manual(values=c("FMSY"="#35a16b","SQ"="#ff2800","econOpt"="#0041ff"))
+
+print(dt.spc)
+```
+
+## Section 16 各県のDiscoountRate別のNPVの棒グラフ (NPVの単位は$1000000000 (1billion=10億))
+
+###各県のDiscountRate別のNPVの棒グラフ{.tabset .tabset-fade}
+
+#### 全魚種での結果
+
+```{r}
+for (n in 1:nrow(translation_pref_remove_na)) {
+  comp_name=translation_pref_remove_na[n,2]
+
+npv_all_comp_1 <- npv_all_comp %>%                                                                              
+  gather(key = management,value = NPV,econOpt,FMSY,SQ) %>%
+  filter(alphabet_pref==comp_name)
+npv_all_comp_1$NPV <- (npv_all_comp_1$NPV*110)/100
+npv_all_comp_1$Rate<-as.character(npv_all_comp_1$Rate)
+
+max_npv <- max(npv_all_comp_1$NPV)
+min_npv <- min(npv_all_comp_1$NPV)
+if(min_npv>0){min_npv <- 0}else{min_npv <- as.integer(floor(min_npv))}
+
+g1 <- ggplot(npv_all_comp_1, aes(x = Rate,y = NPV, fill = management)) +
+  theme_light(base_family = "HiraKakuPro-W3")+ 
+  labs(title = comp_name,x="割引率", y="NPV(1000億円)") +
+  ylim(min_npv,max_npv) +
+  theme(legend.position = 'none') +
+  theme(axis.text=element_text(size=18),
+        axis.title=element_text(size=18,face="bold")) +
+  scale_fill_manual(values=c("FMSY"="#35a16b","SQ"="#ff2800","econOpt"="#0041ff")) +
+  geom_bar(stat = "identity",position = "dodge") 
+
+print(g1)
+
+
+if(Temp_User==1){setwd("/Users/keikawamura/Google ドライブ/Upside_グラフ集/Section16_各県のDiscountRate別のNPVの棒グラフ（単位：10億ドル）")}else if
+(Temp_User==2){setwd("~/Dropbox/#_0_gakuGroup/Upside_Kei.K/Output")}else if
+(Temp_User==3){setwd("C:/Users/aquak/Dropbox/Upside_Kei.K/timeseries/NPV/all")}
+
+File_name<-paste("NPV_bar_",comp_name,".png",sep = "")
+#ggsave(filename = File_name) 
+
+}
+```
+
+#### 移動が少ない魚種を除いた場合の結果
+
+```{r}
+for (n in 1:nrow(translation_pref_remove_na)) {
+  comp_name=translation_pref_remove_na[n,2]
+
+npv_all_comp_1_rm <- npv_all_comp_rm %>%                                                                              
+  gather(key = management,value = NPV,econOpt,FMSY,SQ) %>%
+  filter(alphabet_pref==comp_name)
+npv_all_comp_1_rm$Rate<-as.character(npv_all_comp_1_rm$Rate)
+
+max_rm_npv <- max(npv_all_comp_1_rm$NPV)
+min_rm_npv <- min(npv_all_comp_1_rm$NPV)
+if(min_rm_npv>0){min_rm_npv <- 0}else{min_rm_npv <- as.integer(floor(min_rm_npv))}
+
+g1 <- ggplot(npv_all_comp_1_rm, aes(x = Rate,y = NPV, fill = management)) +
+  labs(title = comp_name,x="DiscountRate", y="NPV(NetPresentValue)") +
+  ylim(min_rm_npv,max_rm_npv) +
+  theme(axis.text=element_text(size=18),
+        axis.title=element_text(size=14,face="bold")) +
+  scale_color_manual(values=c("FMSY"="#35a16b","SQ"="#ff2800","econOpt"="#0041ff")) +
+
+  geom_bar(stat = "identity",position = "dodge") 
+
+print(g1)
+
+
+if(Temp_User==1){setwd("/Users/keikawamura/Dropbox/Upside_Kei.K/Upside_project/Current_Working_Data/timeseries/NPV/rm")}else if
+(Temp_User==2){setwd("~/Dropbox/#_0_gakuGroup/Upside_Kei.K/Output")}else if
+(Temp_User==3){setwd("C:/Users/aquak/Dropbox/Upside_Kei.K/timeseries/NPV/rm")}
+
+File_name<-paste("NPV_bar_rm_",comp_name,".png",sep = "")
+#ggsave(filename = File_name) 
+
+}
+
+
+```
+
+### NPV 
+
+```{r}
+discRate <- data.frame(Rate=c("0.04","0.08","0.16","0.32"))
+discRate$Rate<-as.character(discRate$Rate) %>% as.numeric(discRate$Rate)
+fish_stock_name <- dt.comp1 %>%
+  select(fish_stock) %>%
+  unique()
+
+for (n in 1:nrow(fish_stock_name)) {
+  fish_name <- fish_stock_name[n,1]
+  
+npv_fish <- dt.comp1 %>%
+  filter(management=="econOpt" | management=="SQ" | management=="FMSY") %>%
+  filter(fish_stock==fish_name) %>%
+  select(fish_stock,management,profit1,time) %>%
+  unique() %>%
+  merge(discRate)
+
+npv_fish2<-npv_fish %>%
+  dplyr::group_by(fish_stock,management, time) %>%
+  dplyr::mutate(DiscountedValue=profit1*1/((1+Rate)^(time-1)))  %>%
+  ungroup() %>%
+  group_by(fish_stock,management,Rate) %>%
+  mutate(NPV=sum(DiscountedValue)*110/100000000) %>%
+  select(fish_stock,management,NPV,Rate) %>%
+  unique()
+npv_fish2$Rate<-as.character(npv_fish2$Rate)
+max_npv <- max(npv_fish2$NPV)
+min_npv <- min(npv_fish2$NPV)
+if(min_npv>0){min_npv <- 0}else{min_npv <- as.integer(floor(min_npv))}
+
+g1 <- ggplot(npv_fish2, aes(x = Rate,y = NPV, fill = management)) +
+  theme_light(base_family = "HiraKakuPro-W3") + 
+  labs(title = fish_name,x="割引率", y="NPV(1億円)") +
+  ylim(min_npv,max_npv) +
+  theme(legend.position = 'none') +
+  theme(axis.text=element_text(size=18),
+        axis.title=element_text(size=18,face="bold")) +
+  scale_fill_manual(values=c("FMSY"="#35a16b","SQ"="#ff2800","econOpt"="#0041ff")) +
+  geom_bar(stat = "identity",position = "dodge") 
+
+print(g1)
+
+}
+
+
+
+```
+
+## Section 17 各シナリオ間での漁獲量の比較（SQを軸として、econOpt・FMSYとの比較）
+
+```{r}
+
+dt.comp2.1<-dt.comp1 %>%
+  filter(management=="FMSY" | management=="SQ" | management=="econOpt") %>%
+  group_by(time,management,alphabet_pref) %>%
+  mutate(scenario_total=sum(pref_catch)) %>%
+  select("alphabet_pref","time","scenario_total","management") %>%
+  unique() %>%
+  tidyr::spread(management,scenario_total) %>%
+  mutate(percentage_econOpt_SQ=((econOpt-SQ)/abs(SQ))*100) %>%
+  mutate(percentage_FMSY_SQ=((FMSY-SQ)/abs(SQ))*100) %>%
+  ungroup()
+
+DT::datatable(dt.comp2.1,rownames = FALSE, colnames = c("alphabet_pref","time","econOpt","FMSY","SQ","percentage_econOpt_SQ","percentage_FMSY_SQ"), caption = "Comparison")
+
+```
+
+## Section 18 被災四県(aomori,iwate,miyagi,fukushima) NPVの単位は$1000000000 (1billion=10億)
+
+### 魚種 {.tabset .tabset-fade}
+
+被災四県の各県における魚種リストの作成
+
+#### aomori
+
+青森県は59魚種
+```{r}
+sanriku <- dt.comp1 %>%
+  select(alphabet_pref,fish_stock) %>%
+  unique() 
+sanriku$fish_stock <- as.character(sanriku$fish_stock)
+aomori <- sanriku %>%
+  filter(alphabet_pref=="aomori") %>%
+  select(fish_stock)
+DT::datatable(aomori,rownames = FALSE, colnames = c("fish_stock"), caption = "fish_list")
+```
+
+#### iwate 
+
+岩手県は57魚種
+```{r}
+iwate <- sanriku %>%
+  filter(alphabet_pref=="iwate") %>%
+  select(fish_stock)
+DT::datatable(iwate,rownames = FALSE, colnames = c("fish_stock"), caption = "fish_list")
+
+```
+
+#### miyagi
+
+宮城県は57魚種
+```{r}
+miyagi <- sanriku %>%
+  filter(alphabet_pref=="miyagi") %>%
+  select(fish_stock)
+DT::datatable(miyagi,rownames = FALSE, colnames = c("fish_stock"), caption = "fish_list")
+```
+
+#### fukushima
+
+福島県は56魚種
+```{r}
+fukushima <- sanriku %>%
+  filter(alphabet_pref=="fukushima") %>%
+  select(fish_stock)
+DT::datatable(fukushima,rownames = FALSE, colnames = c("fosh_stock"), caption = "fish_list")
+```
+
+
+### 割合 {.tabset .tabset-fade}
+
+#### 準備
+```{r}
+discRate <- data.frame(Rate=c("0.02","0.04","0.06","0.08"))
+discRate$Rate<-as.character(discRate$Rate) %>% as.numeric(discRate$Rate)
+options(digits = 3)
+options(scipen = 4)
+
+all1<-dt.comp1 %>%
+  dplyr::filter(management == "SQ"|management == "FMSY"|management == "econOpt") %>%
+  merge(discRate) %>%
+  dplyr::mutate(DiscountedValue=(pref_value*1/((1+Rate)^(time-1)))/1000000000)  %>%
+  group_by(management,alphabet_pref,Rate,fish_stock) %>%
+  summarise(NPV = sum(DiscountedValue)) %>%
+  mutate(abs = abs(NPV)) %>%
+  select(alphabet_pref,management,fish_stock,NPV,Rate,abs) %>%
+  ungroup() %>%
+  group_by(management,Rate,alphabet_pref) %>%
+  mutate(sum=sum(NPV)) %>%
+  mutate(abs_sum=sum(abs)) %>%
+  unique() %>%
+  mutate(percentage = NPV/sum) %>%
+  mutate(percentage_abs = abs/abs_sum)
+
+```
+#### aomori
+```{r}
+comp_name <-"aomori"
+options(digits = 3)
+options(scipen = 4)
+aomori <- all1 %>%
+  filter(alphabet_pref==comp_name)
+### aomori Rate management
+a_2_e <- aomori %>%
+  filter(management=="econOpt" & Rate=="0.02") %>%
+  dplyr::arrange(desc(percentage)) %>%
+  head(10)%>%
+  dplyr::mutate(rank_number=row_number(desc(percentage_abs)))
+a_4_e <- aomori %>%
+  filter(management=="econOpt" & Rate=="0.04") %>%
+  dplyr::arrange(desc(percentage)) %>%
+  head(10) %>%
+  dplyr::mutate(rank_number=row_number(desc(percentage_abs)))
+a_6_e <- aomori %>%
+  filter(management=="econOpt" & Rate=="0.06") %>%
+  dplyr::arrange(desc(percentage)) %>%
+  head(10) %>%
+  dplyr::mutate(rank_number=row_number(desc(percentage_abs)))
+a_8_e <- aomori %>%
+  filter(management=="econOpt" & Rate=="0.08") %>%
+  dplyr::arrange(desc(percentage)) %>%
+  head(10) %>%
+  dplyr::mutate(rank_number=row_number(desc(percentage_abs)))
+
+
+a_2_f <- aomori %>%
+  filter(management=="FMSY" & Rate=="0.02") %>%
+  dplyr::arrange(desc(percentage)) %>%
+  head(10) %>%
+  dplyr::mutate(rank_number=row_number(desc(percentage_abs)))
+a_4_f <- aomori %>%
+  filter(management=="FMSY" & Rate=="0.04") %>%
+  dplyr::arrange(desc(percentage)) %>%
+  head(10) %>%
+  dplyr::mutate(rank_number=row_number(desc(percentage_abs)))
+a_6_f <- aomori %>%
+  filter(management=="FMSY" & Rate=="0.06") %>%
+  dplyr::arrange(desc(percentage)) %>%
+  head(10) %>%
+  dplyr::mutate(rank_number=row_number(desc(percentage_abs)))
+a_8_f <- aomori %>%
+  filter(management=="FMSY" & Rate=="0.08") %>%
+  dplyr::arrange(desc(percentage)) %>%
+  head(10) %>%
+  dplyr::mutate(rank_number=row_number(desc(percentage_abs)))
+
+a_2_s <- aomori %>%
+  filter(management=="SQ" & Rate=="0.02") %>%
+  dplyr::arrange(desc(percentage)) %>%
+  head(10) %>%
+  dplyr::mutate(rank_number=row_number(desc(percentage_abs)))
+a_4_s <- aomori %>%
+  filter(management=="SQ" & Rate=="0.04") %>%
+  dplyr::arrange(desc(percentage)) %>%
+  head(10) %>%
+  dplyr::mutate(rank_number=row_number(desc(percentage_abs)))
+a_6_s <- aomori %>%
+  filter(management=="SQ" & Rate=="0.06") %>%
+  dplyr::arrange(desc(percentage)) %>%
+  head(10) %>%
+  dplyr::mutate(rank_number=row_number(desc(percentage_abs)))
+a_8_s <- aomori %>%
+  filter(management=="SQ" & Rate=="0.08") %>%
+  dplyr::arrange(desc(percentage)) %>%
+  head(10) %>%
+  dplyr::mutate(rank_number=row_number(desc(percentage_abs)))
+
+aomori1 <- rbind(a_2_e,a_4_e,a_6_e,a_8_e,a_2_f,a_4_f,a_6_f,a_8_f,a_2_s,a_4_s,a_6_s,a_8_s)
+DT::datatable(aomori1,rownames = FALSE, colnames = c("alphabet_pref","management","fish_stock","NPV","Rate","abs","sum","abs_sum","percentage","parcentage_abs","rank_number"), caption = "aomori")
+rm(a_2_e,a_4_e,a_6_e,a_8_e,a_2_f,a_4_f,a_6_f,a_8_f,a_2_s,a_4_s,a_6_s,a_8_s)
+
+```
+
+#### iwate
+
+```{r}
+comp_name <- "iwate"
+options(digits = 3)
+options(scipen = 3)
+iwate <- all1 %>%
+  filter(alphabet_pref==comp_name)
+### iwate Rate management
+a_2_e <- iwate %>%
+  filter(management=="econOpt" & Rate=="0.02") %>%
+  dplyr::arrange(desc(percentage)) %>%
+  head(10)%>%
+  dplyr::mutate(rank_number=row_number(desc(percentage_abs)))
+a_4_e <- iwate %>%
+  filter(management=="econOpt" & Rate=="0.04") %>%
+  dplyr::arrange(desc(percentage)) %>%
+  head(10) %>%
+  dplyr::mutate(rank_number=row_number(desc(percentage_abs)))
+a_6_e <- iwate %>%
+  filter(management=="econOpt" & Rate=="0.06") %>%
+  dplyr::arrange(desc(percentage)) %>%
+  head(10) %>%
+  dplyr::mutate(rank_number=row_number(desc(percentage_abs)))
+a_8_e <- iwate %>%
+  filter(management=="econOpt" & Rate=="0.08") %>%
+  dplyr::arrange(desc(percentage)) %>%
+  head(10) %>%
+  dplyr::mutate(rank_number=row_number(desc(percentage_abs)))
+
+
+a_2_f <- iwate %>%
+  filter(management=="FMSY" & Rate=="0.02") %>%
+  dplyr::arrange(desc(percentage)) %>%
+  head(10) %>%
+  dplyr::mutate(rank_number=row_number(desc(percentage_abs)))
+a_4_f <- iwate %>%
+  filter(management=="FMSY" & Rate=="0.04") %>%
+  dplyr::arrange(desc(percentage)) %>%
+  head(10) %>%
+  dplyr::mutate(rank_number=row_number(desc(percentage_abs)))
+a_6_f <- iwate %>%
+  filter(management=="FMSY" & Rate=="0.06") %>%
+  dplyr::arrange(desc(percentage)) %>%
+  head(10) %>%
+  dplyr::mutate(rank_number=row_number(desc(percentage_abs)))
+a_8_f <- iwate %>%
+  filter(management=="FMSY" & Rate=="0.08") %>%
+  dplyr::arrange(desc(percentage)) %>%
+  head(10) %>%
+  dplyr::mutate(rank_number=row_number(desc(percentage_abs)))
+
+a_2_s <- iwate %>%
+  filter(management=="SQ" & Rate=="0.02") %>%
+  dplyr::arrange(desc(percentage)) %>%
+  head(10) %>%
+  dplyr::mutate(rank_number=row_number(desc(percentage_abs)))
+a_4_s <- iwate %>%
+  filter(management=="SQ" & Rate=="0.04") %>%
+  dplyr::arrange(desc(percentage)) %>%
+  head(10) %>%
+  dplyr::mutate(rank_number=row_number(desc(percentage_abs)))
+a_6_s <- iwate %>%
+  filter(management=="SQ" & Rate=="0.06") %>%
+  dplyr::arrange(desc(percentage)) %>%
+  head(10) %>%
+  dplyr::mutate(rank_number=row_number(desc(percentage_abs)))
+a_8_s <- iwate %>%
+  filter(management=="SQ" & Rate=="0.08") %>%
+  dplyr::arrange(desc(percentage)) %>%
+  head(10) %>%
+  dplyr::mutate(rank_number=row_number(desc(percentage)))
+
+iwate1 <- rbind(a_2_e,a_4_e,a_6_e,a_8_e,a_2_f,a_4_f,a_6_f,a_8_f,a_2_s,a_4_s,a_6_s,a_8_s)
+rm(a_2_e,a_4_e,a_6_e,a_8_e,a_2_f,a_4_f,a_6_f,a_8_f,a_2_s,a_4_s,a_6_s,a_8_s)
+DT::datatable(iwate1,rownames = FALSE, colnames = c("alphabet_pref","management","fish_stock","NPV","Rate","abs","sum","abs_sum","percentage","parcentage_abs","rank_number"), caption = "iwate")
+
+
+```
+
+#### miyagi
+
+```{r}
+comp_name <- "miyagi"
+options(digits = 3)
+options(scipen = 3)
+miyagi <- all1 %>%
+  filter(alphabet_pref==comp_name)
+### miyagi Rate management
+a_2_e <- miyagi %>%
+  filter(management=="econOpt" & Rate=="0.02") %>%
+  dplyr::arrange(desc(percentage)) %>%
+  head(10)%>%
+  dplyr::mutate(rank_number=row_number(desc(percentage_abs)))
+a_4_e <- miyagi %>%
+  filter(management=="econOpt" & Rate=="0.04") %>%
+  dplyr::arrange(desc(percentage)) %>%
+  head(10) %>%
+  dplyr::mutate(rank_number=row_number(desc(percentage_abs)))
+a_6_e <- miyagi %>%
+  filter(management=="econOpt" & Rate=="0.06") %>%
+  dplyr::arrange(desc(percentage)) %>%
+  head(10) %>%
+  dplyr::mutate(rank_number=row_number(desc(percentage_abs)))
+a_8_e <- miyagi %>%
+  filter(management=="econOpt" & Rate=="0.08") %>%
+  dplyr::arrange(desc(percentage)) %>%
+  head(10) %>%
+  dplyr::mutate(rank_number=row_number(desc(percentage_abs)))
+
+
+a_2_f <- miyagi %>%
+  filter(management=="FMSY" & Rate=="0.02") %>%
+  dplyr::arrange(desc(percentage)) %>%
+  head(10) %>%
+  dplyr::mutate(rank_number=row_number(desc(percentage_abs)))
+a_4_f <- miyagi %>%
+  filter(management=="FMSY" & Rate=="0.04") %>%
+  dplyr::arrange(desc(percentage)) %>%
+  head(10) %>%
+  dplyr::mutate(rank_number=row_number(desc(percentage_abs)))
+a_6_f <- miyagi %>%
+  filter(management=="FMSY" & Rate=="0.06") %>%
+  dplyr::arrange(desc(percentage)) %>%
+  head(10) %>%
+  dplyr::mutate(rank_number=row_number(desc(percentage_abs)))
+a_8_f <- miyagi %>%
+  filter(management=="FMSY" & Rate=="0.08") %>%
+  dplyr::arrange(desc(percentage)) %>%
+  head(10) %>%
+  dplyr::mutate(rank_number=row_number(desc(percentage_abs)))
+
+a_2_s <- miyagi %>%
+  filter(management=="SQ" & Rate=="0.02") %>%
+  dplyr::arrange(desc(percentage)) %>%
+  head(10) %>%
+  dplyr::mutate(rank_number=row_number(desc(percentage_abs)))
+a_4_s <- miyagi %>%
+  filter(management=="SQ" & Rate=="0.04") %>%
+  dplyr::arrange(desc(percentage)) %>%
+  head(10) %>%
+  dplyr::mutate(rank_number=row_number(desc(percentage_abs)))
+a_6_s <- miyagi %>%
+  filter(management=="SQ" & Rate=="0.06") %>%
+  dplyr::arrange(desc(percentage)) %>%
+  head(10) %>%
+  dplyr::mutate(rank_number=row_number(desc(percentage_abs)))
+a_8_s <- miyagi %>%
+  filter(management=="SQ" & Rate=="0.08") %>%
+  dplyr::arrange(desc(percentage)) %>%
+  head(10) %>%
+  dplyr::mutate(rank_number=row_number(desc(percentage_abs)))
+
+miyagi1 <- rbind(a_2_e,a_4_e,a_6_e,a_8_e,a_2_f,a_4_f,a_6_f,a_8_f,a_2_s,a_4_s,a_6_s,a_8_s)
+rm(a_2_e,a_4_e,a_6_e,a_8_e,a_2_f,a_4_f,a_6_f,a_8_f,a_2_s,a_4_s,a_6_s,a_8_s)
+DT::datatable(miyagi1,rownames = FALSE, colnames = c("alphabet_pref","management","fish_stock","NPV","Rate","abs","sum","abs_sum","percentage","parcentage_abs","rank_number"), caption = "miyagi")
+
+
+```
+
+#### fukushima
+
+```{r}
+comp_name <- "fukushima"
+options(digits = 3)
+options(scipen = 3)
+fukushima <- all1 %>%
+  filter(alphabet_pref==comp_name)
+### fukushima Rate management
+a_2_e <- fukushima %>%
+  filter(management=="econOpt" & Rate=="0.02") %>%
+  dplyr::arrange(desc(percentage)) %>%
+  head(10)%>%
+  dplyr::mutate(rank_number=row_number(desc(percentage)))
+a_4_e <- fukushima %>%
+  filter(management=="econOpt" & Rate=="0.04") %>%
+  dplyr::arrange(desc(percentage)) %>%
+  head(10) %>%
+  dplyr::mutate(rank_number=row_number(desc(percentage)))
+a_6_e <- fukushima %>%
+  filter(management=="econOpt" & Rate=="0.06") %>%
+  dplyr::arrange(desc(percentage)) %>%
+  head(10) %>%
+  dplyr::mutate(rank_number=row_number(desc(percentage)))
+a_8_e <- fukushima %>%
+  filter(management=="econOpt" & Rate=="0.08") %>%
+  dplyr::arrange(desc(percentage)) %>%
+  head(10) %>%
+  dplyr::mutate(rank_number=row_number(desc(percentage)))
+
+
+a_2_f <- fukushima %>%
+  filter(management=="FMSY" & Rate=="0.02") %>%
+  dplyr::arrange(desc(percentage)) %>%
+  head(10) %>%
+  dplyr::mutate(rank_number=row_number(desc(percentage)))
+a_4_f <- fukushima %>%
+  filter(management=="FMSY" & Rate=="0.04") %>%
+  dplyr::arrange(desc(percentage)) %>%
+  head(10) %>%
+  dplyr::mutate(rank_number=row_number(desc(percentage)))
+a_6_f <- fukushima %>%
+  filter(management=="FMSY" & Rate=="0.06") %>%
+  dplyr::arrange(desc(percentage)) %>%
+  head(10) %>%
+  dplyr::mutate(rank_number=row_number(desc(percentage)))
+a_8_f <- fukushima %>%
+  filter(management=="FMSY" & Rate=="0.08") %>%
+  dplyr::arrange(desc(percentage)) %>%
+  head(10) %>%
+  dplyr::mutate(rank_number=row_number(desc(percentage)))
+
+a_2_s <- fukushima %>%
+  filter(management=="SQ" & Rate=="0.02") %>%
+  dplyr::arrange(desc(percentage)) %>%
+  head(10) %>%
+  dplyr::mutate(rank_number=row_number(desc(percentage)))
+a_4_s <- fukushima %>%
+  filter(management=="SQ" & Rate=="0.04") %>%
+  dplyr::arrange(desc(percentage)) %>%
+  head(10) %>%
+  dplyr::mutate(rank_number=row_number(desc(percentage)))
+a_6_s <- fukushima %>%
+  filter(management=="SQ" & Rate=="0.06") %>%
+  dplyr::arrange(desc(percentage)) %>%
+  head(10) %>%
+  dplyr::mutate(rank_number=row_number(desc(percentage)))
+a_8_s <- fukushima %>%
+  filter(management=="SQ" & Rate=="0.08") %>%
+  dplyr::arrange(desc(percentage)) %>%
+  head(10) %>%
+  dplyr::mutate(rank_number=row_number(desc(percentage)))
+
+fukushima1 <- rbind(a_2_e,a_4_e,a_6_e,a_8_e,a_2_f,a_4_f,a_6_f,a_8_f,a_2_s,a_4_s,a_6_s,a_8_s)
+rm(a_2_e,a_4_e,a_6_e,a_8_e,a_2_f,a_4_f,a_6_f,a_8_f,a_2_s,a_4_s,a_6_s,a_8_s)
+DT::datatable(fukushima1,rownames = FALSE, colnames = c("alphabet_pref","management","fish_stock","NPV","Rate","abs","sum","abs_sum","percentage","parcentage_abs","rank_number"), caption = "fukushima")
+
+
+```
+
+### 棒グラフ {.tabset .tabset-fade}
+
+任意の魚種を削除して検証する用
+
+#### aomori
+```{r}
+discRate <- data.frame(Rate=c("0.02","0.04","0.06","0.08"))
+discRate$Rate<-as.character(discRate$Rate) %>% as.numeric(discRate$Rate)
+
+npv1<-dt.comp1 %>%
+  dplyr::filter(management == "SQ"|management == "FMSY"|management == "econOpt") %>%
+  dplyr::filter(time<31) %>%
+  merge(discRate) %>%
+  filter(!fish_stock=="")
+
+npv2<-npv1 %>%
+  dplyr::group_by(alphabet_pref,management, time) %>%
+  dplyr::mutate(Year_Catch=sum(pref_catch),Year_Value=sum(pref_value)) %>%
+  dplyr::mutate(DiscountedValue=Year_Value*1/((1+Rate)^(time-1)))  %>%
+  select(alphabet_pref,management,time,Year_Catch,Year_Value,DiscountedValue,Rate) %>%
+  ungroup() %>%
+  unique()
+  
+npv_all<-npv2 %>%
+  dplyr::group_by(alphabet_pref,management,Rate) %>%
+  dplyr::summarize((PV=sum(DiscountedValue))/1000000000) %>%
+  tidyr::spread(management,-alphabet_pref) 
+
+npv_all <- npv_all %>%                                                                              
+  gather(key = management,value = NPV,econOpt,FMSY,SQ) %>%
+  filter(alphabet_pref=="aomori")
+npv_all$Rate<-as.character(npv_all$Rate)
+max_npv <- max(npv_all$NPV)
+min_npv <- min(npv_all_comp_1$NPV)
+if(min_npv>0){min_npv <- 0}else{min_npv <- as.integer(floor(min_npv))}
+
+g1 <- ggplot(npv_all, aes(x = Rate,y = NPV, fill = management)) +
+  labs(title = "aomori",x="DiscountRate", y="NPV(NetPresentValue)") +
+  ylim(min_npv,max_npv) +
+  theme(axis.text=element_text(size=18),
+        axis.title=element_text(size=14,face="bold")) +
+  scale_color_manual(values=c("FMSY"="#35a16b","SQ"="#ff2800","econOpt"="#0041ff")) +
+  geom_bar(stat = "identity",position = "dodge") 
+
+print(g1)
+
+if(Temp_User==1){setwd("/Users/keikawamura/Dropbox/Upside_Kei.K/Upside_project/Current_Working_Data/timeseries/NPV/all")}else if
+(Temp_User==2){setwd("~/Dropbox/#_0_gakuGroup/Upside_Kei.K/Output")}else if
+(Temp_User==3){setwd("C:/Users/aquak/Dropbox/Upside_Kei.K")}
+
+File_name<-paste("NPV_bar_rm_iwate_","aomori",".png",sep = "")
+#ggsave(filename = File_name) 
+
+```
+#### iwate
+```{r}
+discRate <- data.frame(Rate=c("0.02","0.04","0.06","0.08"))
+discRate$Rate<-as.character(discRate$Rate) %>% as.numeric(discRate$Rate)
+
+npv1<-dt.comp1 %>%
+  dplyr::filter(management == "SQ"|management == "FMSY"|management == "econOpt") %>%
+  dplyr::filter(time<31) %>%
+  merge(discRate) %>%
+  filter(!fish_stock=="cod_pacific_north_stock")
+
+npv2<-npv1 %>%
+  dplyr::group_by(alphabet_pref,management, time) %>%
+  dplyr::mutate(Year_Catch=sum(pref_catch),Year_Value=sum(pref_value)) %>%
+  dplyr::mutate(DiscountedValue=Year_Value*1/((1+Rate)^(time-1)))  %>%
+  select(alphabet_pref,management,time,Year_Catch,Year_Value,DiscountedValue,Rate) %>%
+  ungroup() %>%
+  unique()
+  
+npv_all<-npv2 %>%
+  dplyr::group_by(alphabet_pref,management,Rate) %>%
+  dplyr::summarize((PV=sum(DiscountedValue))/1000000000) %>%
+  tidyr::spread(management,-alphabet_pref) 
+
+npv_all <- npv_all %>%                                                                              
+  gather(key = management,value = NPV,econOpt,FMSY,SQ) %>%
+  filter(alphabet_pref=="iwate")
+npv_all$Rate<-as.character(npv_all$Rate)
+max_npv <- max(npv_all$NPV)
+min_npv <- min(npv_all_comp_1$NPV)
+if(min_npv>0){min_npv <- 0}else{min_npv <- as.integer(floor(min_npv))}
+
+g1 <- ggplot(npv_all, aes(x = Rate,y = NPV, fill = management)) +
+  labs(title = "iwate",x="DiscountRate", y="NPV(NetPresentValue)") +
+  ylim(min_npv,max_npv) +
+  theme(axis.text=element_text(size=18),
+        axis.title=element_text(size=14,face="bold")) +
+  scale_color_manual(values=c("FMSY"="#35a16b","SQ"="#ff2800","econOpt"="#0041ff")) +
+  geom_bar(stat = "identity",position = "dodge") 
+
+print(g1)
+
+if(Temp_User==1){setwd("/Users/keikawamura/Dropbox/Upside_Kei.K/Upside_project/Current_Working_Data/timeseries/NPV/all")}else if
+(Temp_User==2){setwd("~/Dropbox/#_0_gakuGroup/Upside_Kei.K/Output")}else if
+(Temp_User==3){setwd("C:/Users/aquak/Dropbox/Upside_Kei.K/timeseries/NPV/all")}
+
+File_name<-paste("NPV_bar_rm_iwate_","iwate",".png",sep = "")
+#ggsave(filename = File_name) 
+
+```
+#### miyagi
+```{r}
+discRate <- data.frame(Rate=c("0.02","0.04","0.06","0.08"))
+discRate$Rate<-as.character(discRate$Rate) %>% as.numeric(discRate$Rate)
+
+npv1<-dt.comp1 %>%
+  dplyr::filter(management == "SQ"|management == "FMSY"|management == "econOpt") %>%
+  dplyr::filter(time<31) %>%
+  merge(discRate) %>%
+  filter(!fish_stock=="cod_pacific_north_stock")
+
+npv2<-npv1 %>%
+  dplyr::group_by(alphabet_pref,management, time) %>%
+  dplyr::mutate(Year_Catch=sum(pref_catch),Year_Value=sum(pref_value)) %>%
+  dplyr::mutate(DiscountedValue=Year_Value*1/((1+Rate)^(time-1)))  %>%
+  select(alphabet_pref,management,time,Year_Catch,Year_Value,DiscountedValue,Rate) %>%
+  ungroup() %>%
+  unique()
+  
+npv_all<-npv2 %>%
+  dplyr::group_by(alphabet_pref,management,Rate) %>%
+  dplyr::summarize((PV=sum(DiscountedValue))/1000000000) %>%
+  tidyr::spread(management,-alphabet_pref) 
+
+npv_all <- npv_all %>%                                                                              
+  gather(key = management,value = NPV,econOpt,FMSY,SQ) %>%
+  filter(alphabet_pref=="miyagi")
+npv_all$Rate<-as.character(npv_all$Rate)
+max_npv <- max(npv_all$NPV)
+min_npv <- min(npv_all_comp_1$NPV)
+if(min_npv>0){min_npv <- 0}else{min_npv <- as.integer(floor(min_npv))}
+
+g1 <- ggplot(npv_all, aes(x = Rate,y = NPV, fill = management)) +
+  labs(title = "miyagi",x="DiscountRate", y="NPV(NetPresentValue)") +
+  ylim(min_npv,max_npv) +
+  theme(axis.text=element_text(size=18),
+        axis.title=element_text(size=14,face="bold")) +
+  scale_color_manual(values=c("FMSY"="#35a16b","SQ"="#ff2800","econOpt"="#0041ff")) +
+  geom_bar(stat = "identity",position = "dodge") 
+
+print(g1)
+
+if(Temp_User==1){setwd("/Users/keikawamura/Dropbox/Upside_Kei.K/Upside_project/Current_Working_Data/timeseries/NPV/all")}else if
+(Temp_User==2){setwd("~/Dropbox/#_0_gakuGroup/Upside_Kei.K/Output")}else if
+(Temp_User==3){setwd("C:/Users/aquak/Dropbox/Upside_Kei.K/timeseries/NPV/all")}
+
+File_name<-paste("NPV_bar_rm_iwate_","miyagi",".png",sep = "")
+#ggsave(filename = File_name) 
+
+```
+#### fukushima
+```{r}
+discRate <- data.frame(Rate=c("0.02","0.04","0.06","0.08"))
+discRate$Rate<-as.character(discRate$Rate) %>% as.numeric(discRate$Rate)
+
+npv1<-dt.comp1 %>%
+  dplyr::filter(management == "SQ"|management == "FMSY"|management == "econOpt") %>%
+  dplyr::filter(time<31) %>%
+  merge(discRate) %>%
+  filter(!fish_stock=="")
+
+npv2<-npv1 %>%
+  dplyr::group_by(alphabet_pref,management, time) %>%
+  dplyr::mutate(Year_Catch=sum(pref_catch),Year_Value=sum(pref_value)) %>%
+  dplyr::mutate(DiscountedValue=Year_Value*1/((1+Rate)^(time-1)))  %>%
+  select(alphabet_pref,management,time,Year_Catch,Year_Value,DiscountedValue,Rate) %>%
+  ungroup() %>%
+  unique()
+  
+npv_all<-npv2 %>%
+  dplyr::group_by(alphabet_pref,management,Rate) %>%
+  dplyr::summarize((PV=sum(DiscountedValue))/1000000000) %>%
+  tidyr::spread(management,-alphabet_pref) 
+
+npv_all <- npv_all %>%                                                                              
+  gather(key = management,value = NPV,econOpt,FMSY,SQ) %>%
+  filter(alphabet_pref=="fukushima")
+npv_all$Rate<-as.character(npv_all$Rate)
+max_npv <- max(npv_all$NPV)
+min_npv <- min(npv_all_comp_1$NPV)
+if(min_npv>0){min_npv <- 0}else{min_npv <- as.integer(floor(min_npv))}
+
+g1 <- ggplot(npv_all, aes(x = Rate,y = NPV, fill = management)) +
+  labs(title = "fukushima",x="DiscountRate", y="NPV(NetPresentValue)") +
+  ylim(min_npv,max_npv) +
+  theme(axis.text=element_text(size=18),
+        axis.title=element_text(size=14,face="bold")) +
+  scale_color_manual(values=c("FMSY"="#35a16b","SQ"="#ff2800","econOpt"="#0041ff")) +
+  geom_bar(stat = "identity",position = "dodge") 
+
+print(g1)
+
+if(Temp_User==1){setwd("/Users/keikawamura/Dropbox/Upside_Kei.K/Upside_project/Current_Working_Data/timeseries/NPV/all")}else if
+(Temp_User==2){setwd("~/Dropbox/#_0_gakuGroup/Upside_Kei.K/Output")}else if
+(Temp_User==3){setwd("C:/Users/aquak/Dropbox/Upside_Kei.K/timeseries/NPV/all")}
+
+File_name<-paste("NPV_bar_rm_iwate_","fukushima",".png",sep = "")
+#ggsave(filename = File_name) 
+
+```
+
+## Section 19  Top10データのTimeseries  {.tabset .tabset-fade}
+
+### Biomass
+```{r}
+sanriku <- rbind(aomori1,iwate1,miyagi1,fukushima1)
+
+sanriku_list <- dt.comp1 %>%
+  #ungroup() %>%
+  filter(management=="SQ") %>%
+  select(fish_stock,management) %>%
+  filter(fish_stock=="japanese_common_squid_winter_stock" | fish_stock=="neon_flying_squid_single_stock" | fish_stock=="neon_flying_squid_single_stock" | fish_stock=="salmon_single_stock" | fish_stock=="righteye_flounder_pacific_north" | fish_stock=="abalone_single_stock" | fish_stock=="cod_pacific_north_stock" | fish_stock=="mackerel_pacific_stock" | fish_stock=="yellowtail_single_stock" | fish_stock=="red_rock_fish_single_stock" | fish_stock=="snow_crab_pacific") %>%
+  unique() 
+
+sanriku_list$fish_stock <- as.character(sanriku_list$fish_stock)
+
+for (n in 1:nrow(sanriku_list)) {
+  sanriku_name=sanriku_list[n,1]
+  
+sanriku2 <- dt.comp %>%
+  filter(fish_stock==sanriku_name) %>%
+  filter(management=="econOpt" | management=="SQ"| management=="FMSY")
+
+max_h <- max(sanriku2$biomass)
+min_h <- min(sanriku2$biomass)
+
+data1<-ggplot(data = sanriku2,mapping=aes(x=time,y=biomass,group=factor(management),colour=factor(management))) +
+  xlab("Time") +
+  ylab("biomass") +
+  labs(colour = "Management") +
+  labs(title = fish_name) +
+  xlim(0,50) +
+  ylim(min_h,max_h) +
+  geom_line() +
+  theme(axis.text=element_text(size=18),
+        axis.title=element_text(size=14,face="bold")) +
+  scale_color_manual(values=c("FMSY"="#35a16b","SQ"="#ff2800","econOpt"="#0041ff")) +
+  geom_point()
+print(data1)
+  
+}
+
+
+
+```
+
+### plofit
+
+```{r}
+
+for (n in 1:nrow(sanriku_list)) {
+  fish_name=sanriku_list[n,1]
+  
+sanriku2 <- dt.comp %>%
+  filter(fish_stock==fish_name) %>%
+  filter(management=="econOpt" | management=="SQ"| management=="FMSY")
+
+max_h <- max(sanriku2$profit1)
+min_h <- min(sanriku2$profit1)
+
+data1<-ggplot(data = sanriku2,mapping=aes(x=time,y=profit1,group=factor(management),colour=factor(management))) +
+  xlab("Time") +
+  ylab("profit") +
+  labs(colour = "Management") +
+  labs(title = fish_name) +
+  xlim(0,50) +
+  ylim(min_h,max_h) +
+  geom_line() +
+  theme(axis.text=element_text(size=18),
+        axis.title=element_text(size=14,face="bold")) +
+  scale_color_manual(values=c("FMSY"="#35a16b","SQ"="#ff2800","econOpt"="#0041ff")) +
+  geom_point()
+print(data1)
+  
+}
+
+```
+
+### catch
+
+```{r}
+par(mfrow=c(3,4)) 
+for (n in 1:nrow(sanriku_list)) {
+  fish_name=sanriku_list[n,1]
+  
+sanriku2 <- dt.comp %>%
+  filter(fish_stock==fish_name) %>%
+  filter(management=="econOpt" | management=="SQ"| management=="FMSY")
+
+max_h <- max(sanriku2$harvest1)
+min_h <- min(sanriku2$harvest1)
+
+data1<-ggplot(data = sanriku2,mapping=aes(x=time,y=harvest1,group=factor(management),colour=factor(management))) +
+  xlab("Time") +
+  ylab("harvest") +
+  labs(colour = "Management") +
+  labs(title = fish_name) +
+  xlim(0,50) +
+  ylim(min_h,max_h) +
+  geom_line() +
+  theme(axis.text=element_text(size=18),
+        axis.title=element_text(size=14,face="bold")) +
+  scale_color_manual(values=c("FMSY"="#35a16b","SQ"="#ff2800","econOpt"="#0041ff")) +
+  geom_point()
+print(data1)
+  
+}
+
+```
+
+### NPV 
+
+```{r}
+discRate <- data.frame(Rate=c("0.04","0.08","0.16","0.32"))
+discRate$Rate<-as.character(discRate$Rate) %>% as.numeric(discRate$Rate)
+fish_stock_name <- dt.comp1 %>%
+  select(fish_stock) %>%
+  unique()
+
+for (n in 1:nrow(fish_stock_name)) {
+  fish_name <- fish_stock_name[n,1]
+  
+npv_fish <- dt.comp1 %>%
+  filter(management=="econOpt" | management=="SQ" | management=="FMSY") %>%
+  filter(fish_stock==fish_name) %>%
+  select(fish_stock,management,profit1,time) %>%
+  unique() %>%
+  merge(discRate)
+
+npv_fish2<-npv_fish %>%
+  dplyr::group_by(fish_stock,management, time) %>%
+  dplyr::mutate(DiscountedValue=profit1*1/((1+Rate)^(time-1)))  %>%
+  ungroup() %>%
+  group_by(fish_stock,management,Rate) %>%
+  mutate(NPV=sum(DiscountedValue)*110/100000000) %>%
+  select(fish_stock,management,NPV,Rate) %>%
+  unique()
+npv_fish2$Rate<-as.character(npv_fish2$Rate)
+max_npv <- max(npv_fish2$NPV)
+min_npv <- min(npv_fish2$NPV)
+if(min_npv>0){min_npv <- 0}else{min_npv <- as.integer(floor(min_npv))}
+
+g1 <- ggplot(npv_fish2, aes(x = Rate,y = NPV, fill = management)) +
+  theme_light(base_family = "HiraKakuPro-W3") + 
+  labs(title = fish_name,x="割引率", y="NPV(1億円)") +
+  ylim(min_npv,max_npv) +
+  theme(legend.position = 'none') +
+  theme(axis.text=element_text(size=18),
+        axis.title=element_text(size=18,face="bold")) +
+  scale_fill_manual(values=c("FMSY"="#35a16b","SQ"="#ff2800","econOpt"="#0041ff")) +
+  geom_bar(stat = "identity",position = "dodge") 
+
+print(g1)
+
+}
+
+
+
+```
+
+## Section20 Biomassデータ{.tabset .tabset-fade}
+
+### 県ごと
+
+```{r}
+options(scipen=999)
+theme_set(theme_bw())
+for (n in 1:nrow(translation_pref_remove_na)) {
+  comp_name=translation_pref_remove_na[n,2]
+
+biomass <- dt.comp1 %>%
+  filter(management=="econOpt"|management=="FMSY"|management=="SQ") %>%
+  filter(alphabet_pref==comp_name) %>%
+  mutate(total_pref_bio=(percentage_h*biomass)) %>%
+  group_by(management,time) %>%
+  mutate(fish_total_biomass = sum(total_pref_bio)) %>%
+  ungroup()
+
+biomass2 <- biomass %>%
+  select("time","fish_total_biomass","management") %>%
+  unique() 
+biomass2$fish_total_biomass_1000t <- biomass2$fish_total_biomass/1000
+
+fish_name1<-paste(fish_name,"biomass",sep="_")
+
+
+max_fish <- max(biomass2$fish_total_biomass_1000t)
+min_fish <- min(biomass2$fish_total_biomass_1000t)
+
+data_fish1<-ggplot(data = biomass2,mapping=aes(x=time,y=fish_total_biomass_1000t,group=factor(management),colour=factor(management))) +
+  xlab("Time") +
+  ylab("Biomass_1000t") +
+  labs(colour = "Management") +
+  labs(title = comp_name) +
+  xlim(0,50) +
+  ylim(min_fish,max_fish) +
+  geom_line() +
+  #theme(legend.position = 'none') +
+  theme(axis.text=element_text(size=14),
+        axis.title=element_text(size=14,face="bold")) +
+  scale_color_manual(values=c("FMSY"="#35a16b","SQ"="#ff2800","econOpt"="#0041ff")) +
+  geom_point()
+print(data_fish1)
+
+if(Temp_User==1){setwd("/Users/keikawamura/Google ドライブ/Upside_グラフ集/Section20_Biomassデータ/県別漁獲量　")}else if
+(Temp_User==2){setwd("~/Dropbox/#_0_gakuGroup/Upside_Kei.K")}else if
+(Temp_User==3){setwd("C:/Users/aquak/Dropbox/Upside_Kei.K")}
+
+File_name<-paste("biomass_",comp_name,".png",sep = "")
+#ggsave(filename = File_name) 
+}
+```
+
+### 地図
+
+```{r}
+biomass <- dt.comp1 %>%
+  filter(management=="econOpt"|management=="FMSY"|management=="SQ") %>%
+  mutate(total_pref_bio=(percentage_h*biomass)) %>%
+  group_by(management,time) %>%
+  mutate(fish_total_biomass = sum(total_pref_bio)) %>%
+  ungroup()
+
+dt.comp3_b<-0
+for (n in 1:nrow(translation_pref_remove_na)) {
+  comp_name=translation_pref_remove_na[n,2]
+  
+dt.comp2.1<-biomass %>%
+  filter(alphabet_pref==comp_name) %>%
+  filter(management=="FMSY")
+dt.comp2.2<-biomass %>%
+  filter(alphabet_pref==comp_name) %>%
+  filter(management=="SQ")
+dt.comp2.3<-biomass %>%
+  filter(alphabet_pref==comp_name) %>%
+  filter(management=="econOpt")
+dt.comp2.4<-rbind(dt.comp2.1,dt.comp2.2,dt.comp2.3)
+dt.comp2<-dt.comp2.4 %>%
+  group_by(management,time,alphabet_pref) %>%
+  summarise(total_biomass = sum(total_pref_bio)) %>%
+  ungroup()
+  
+if(n==1){dt.comp3_b<-dt.comp2}else
+  {dt.comp3_b<-rbind(dt.comp3_b,dt.comp2)}
+
+}
+
+dt.comp7_50 <- dt.comp3_b %>%
+  filter(time=="50")%>%
+  tidyr::spread(management,total_biomass)
+#dt.comp7_50 <- dt.comp7_50[,c(1,2,4,5,3)]
+dt.comp7_50_1 <- dt.comp7_50 %>%
+  filter(FMSY > SQ & FMSY > econOpt) %>%
+  mutate(best = "FMSY")
+
+dt.comp7_50_2 <- dt.comp7_50 %>%
+  filter(econOpt > SQ & econOpt > FMSY) %>%
+  mutate(best = "econOpt")
+
+dt.comp7_50_3 <- dt.comp7_50 %>%
+  filter(SQ > FMSY & SQ > econOpt ) %>%
+  mutate(best = "SQ")
+
+dt.comp7_50_comp_b <- data.frame(rbind(dt.comp7_50_1,dt.comp7_50_2,dt.comp7_50_3))
+
+dt.comp7 <- dt.comp3_b %>%
+  group_by(alphabet_pref,management) %>%
+  summarise(sum = sum(total_biomass)) %>%
+  tidyr::spread(management,sum) %>%
+  mutate(econOpt_SQ = econOpt/SQ ) %>%
+  mutate(FMSY_SQ = FMSY/SQ)
+
+dt.comp7_1 <- dt.comp7 %>%
+  filter(FMSY > SQ & FMSY > econOpt) %>%
+  mutate(best = "FMSY")
+
+dt.comp7_2 <- dt.comp7 %>%
+  filter(econOpt > SQ & econOpt > FMSY) %>%
+  mutate(best = "econOpt")
+
+dt.comp7_3 <- dt.comp7 %>%
+  filter(SQ > FMSY & SQ > econOpt ) %>%
+  mutate(best = "SQ")
+
+dt.comp7_comp_b <- data.frame(rbind(dt.comp7_1,dt.comp7_2,dt.comp7_3))
+
+if(Temp_User==1){setwd("/Users/keikawamura/Dropbox/Upside_Kei.K/Upside_project/Current_Working_Data/timeseries/map/harvest")}else if
+(Temp_User==2){setwd("~/Dropbox/#_0_gakuGroup/Upside_Kei.K/Output")}else if
+(Temp_User==3){setwd("C:/Users/aquak/Dropbox/Upside_Kei.K/timeseries/map/harvest")}
+
+jpn <- admin1_map("japan")
+
+
+dt.spc<-data.frame(region = dt.comp7_comp_b[, 1], value = dt.comp7_comp_b[, 7])
+colnames(dt.spc)<-c("region","value")
+dt.spc$region<-as.character(dt.spc$region)
+dt.spc$value<-as.character(dt.spc$value)
+admin1_choropleth(country.name = "japan",
+                  df           = dt.spc,
+                  title        = "Optimal_biomass_total_50years",
+                  legend       = "management",
+                  num_colors   = ) + scale_fill_manual(values=c("FMSY"="#35a16b","SQ"="#ff2800","econOpt"="#0041ff"))
+
+dt.spc<-data.frame(region = dt.comp7_50_comp_b[, 2], value = dt.comp7_50_comp_b[, 6])
+colnames(dt.spc)<-c("region","value")
+dt.spc$region<-as.character(dt.spc$region)
+dt.spc$value<-as.character(dt.spc$value)
+admin1_choropleth(country.name = "japan",
+                  df           = dt.spc,
+                  title        = "Optimal_biomass_50years_later",
+                  legend       = "management",
+                  num_colors   = ) + scale_fill_manual(values=c("FMSY"="#35a16b","SQ"="#ff2800","econOpt"="#0041ff"))
+
+
+
+```
+
+### 魚種ごと
+
+```{r}
+
+for (n in 1:nrow(fish_list)) {
+  fish_name=fish_list[n,1]
+  
+
+biomass3<-dt.comp1 %>%
+  filter(management=="econOpt"|management=="FMSY"|management=="SQ") %>%
+  filter(fish_stock==fish_name) %>%
+  select("time","biomass","management")
+biomass4<-unique(biomass3)
+
+fish_name1<-paste(fish_name,"biomass",sep="_")
+
+
+max_fish <- max(biomass4$biomass)
+min_fish <- min(biomass4$biomass)
+
+data_fish1<-ggplot(data = biomass4,mapping=aes(x=time,y=biomass,group=factor(management),colour=factor(management))) +
+  xlab("Time") +
+  ylab("Biomass") +
+  labs(colour = "Management") +
+  labs(title = fish_name1) +
+  xlim(0,50) +
+  ylim(min_fish,max_fish) +
+  geom_line() +
+  geom_point()
+print(data_fish1)
+
+if(Temp_User==1){setwd("/Users/keikawamura/Google ドライブ/Upside_グラフ集/Section20_Biomassデータ/魚種別")}else if
+(Temp_User==2){setwd("~/Dropbox/#_0_gakuGroup/Upside_Kei.K")}else if
+(Temp_User==3){setwd("C:/Users/aquak/Dropbox/Upside_Kei.K")}
+
+File_name<-paste("biomass_",fish_name,".png",sep = "")
+
+#ggsave(filename = File_name) 
+
+}
+
+
+```
+
+## Section 21 NPV 1%~50% 
+
+
+## Section22 過去のデータでの魚種一覧表・平均シェア割合
+
+```{r}
+dicimal_digits <- function(x, digits=0) {
+  return (floor(x * 10^digits) /10^digits)
+}
+
+dt.weight2 <- dt.weight %>%
+  select(fish_stock,year,alphabet_pref,weight_t,Japanese) %>%
+  group_by(fish_stock,year) %>%
+  mutate(total = sum(weight_t)) %>%
+  ungroup() %>%
+  mutate(pref_rate = weight_t/total) %>%
+  group_by(fish_stock,alphabet_pref) %>%
+  mutate(average_rate = mean(pref_rate)) %>%
+  ungroup()
+dt.share <- dt.weight2 %>%
+  select(fish_stock,average_rate,alphabet_pref) %>%
+  unique()
+
+dt.share$average_rate <- dicimal_digits(dt.share$average_rate,digits = 3)
+
+Sys.Date()
+class(Sys.Date())
+now=as.character(Sys.Date())  # 現在の日付をテキスト型に変更
+class(now)
+
+Past_PrefectureAllocation<-dt.share
+
+File_Name=paste("List_of_average_of_annual_share",now,".csv", sep="") 
+
+#write.csv(Past_PrefectureAllocation, file= File_Name,fileEncoding = "CP932")
+
+
+```
+
+## Section 23 グラフの配置 (prefecture)
+
+```{r}
+
+for (n in 1:nrow(translation_pref_remove_na)) { 
+comp_name=translation_pref_remove_na[n,2]
+setwd("~/Dropbox/Upside_Kei.K/Upside_project/Current_Working_Data/timeseries/bar")
+
+dt.comp2.1<-dt.comp1 %>%
+  #filter(alphabet_pref==comp_name) %>%
+  filter(management=="FMSY")
+dt.comp2.2<-dt.comp1 %>%
+  #filter(alphabet_pref==comp_name) %>%
+  filter(management=="SQ")
+
+dt.comp2.4<-rbind(dt.comp2.1,dt.comp2.2)#,dt.comp2.3)
+
+#dt.comp2にある年のある県の総漁獲量(total_harvest)を加えたdt.comp2.4を格納
+dt.comp2<-dt.comp2.4 %>%
+  group_by(management,time,alphabet_pref) %>%
+  summarise(total_harvest = (sum(pref_catch))/1000) %>%
+  ungroup()
+  
+comp_name1 <- paste(comp_name,"Comparison of SQ and econOpt",sep="_")
+#comp_name2 <- paste(comp_name,"Comparison of SQ and FMSY",sep="_")
+comp_name2 <- paste(comp_name)
+comp_name3 <- paste(comp_name,"Timeseries",sep = "_")
+# Extract year that econOpt reaches SQ 
+dt.comp2_r <- dt.comp2 %>%
+  tidyr::spread(key=management,value=total_harvest)
+#dt.comp2_r1 <- head(dt.comp2_r[dt.comp2_r$econOpt>dt.comp2_r$SQ,],1)
+#reach_year = as.integer(dt.comp2_r1[1,1])
+cutcut <- function(x,digits){
+  return (floor(x * 10^digits) /10^digits)
+}
+dt.comp2_r$rate <- (dt.comp2_r$FMSY/dt.comp2_r$SQ)-1
+dt.comp2_r$Rate <- ifelse(dt.comp2_r$rate < 0, "below", "above")
+dt.comp2_r <- dt.comp2_r %>% dplyr::filter(alphabet_pref==comp_name) 
+max_r <- max(dt.comp2_r$rate)
+min_r <- min(dt.comp2_r$rate)
+if(min_r>0){min_r <- 0}else{min_r <- cutcut(min_r,digits=2)}
+
+g1 <- ggplot(dt.comp2_r, aes(x = time,y = rate, fill = Rate)) +
+  theme_light(base_family = "HiraKakuPro-W3",base_size = 10)+ 
+  #labs(x="年", y="割合") +
+  labs(title = comp_name) +
+  ylim(min_r,max_r) +
+  #theme(axis.text=element_text(size=18),
+    #    axis.title=element_text(size=18,face="bold")) +
+  scale_fill_manual(values=c("above"="#00552e","below"="#68be8d")) +
+  geom_bar(stat = "identity",position = "dodge") +
+  #scale_y_continuous(labels=scaleFUN) +
+  theme(legend.position = 'none') +
+  theme(axis.title.x = element_blank(), axis.title.y = element_blank())
+assign(paste(comp_name),g1,env=.GlobalEnv)#assignによって名前の異なるデータフレームが作成可能になる。データフレームはGlobal Environment内のものなのでenv=.GlobalEnvを付けておく
+file_name <- paste("harvest_",comp_name,".png")
+plot(g1)
+#ggsave(file_name)
+}
+
+#秋田県は値が大きい為、軸を変えて作成する
+comp_name=translation_pref_remove_na[5,2]
+dt.comp2_r <- dt.comp2 %>%
+  tidyr::spread(key=management,value=total_harvest)
+dt.comp2_r$rate <- (dt.comp2_r$FMSY/dt.comp2_r$SQ)-1
+dt.comp2_r$Rate <- ifelse(dt.comp2_r$rate < 0, "below", "above")
+dt.comp2_r <- dt.comp2_r %>% dplyr::filter(alphabet_pref==comp_name) 
+g1 <- ggplot(dt.comp2_r, aes(x = time,y = rate, fill = Rate)) +
+  theme_light(base_family = "HiraKakuPro-W3",base_size = 3)+ 
+  #labs(x="年", y="割合") +
+  labs(title = comp_name) +
+  #theme(axis.text=element_text(size=18),
+    #    axis.title=element_text(size=18,face="bold")) +
+  scale_fill_manual(values=c("above"="#00552e","below"="#68be8d")) +
+  geom_bar(stat = "identity",position = "dodge") +
+  #scale_y_continuous(labels=scaleFUN) +
+  theme(legend.position = 'none') +
+  theme(axis.title.x = element_blank(), axis.title.y = element_blank())
+assign(paste(comp_name),g1,env=.GlobalEnv) 
+
+#山形県は値が大きい為、軸を変えて作成する
+comp_name=translation_pref_remove_na[6,2]
+dt.comp2_r <- dt.comp2 %>%
+  tidyr::spread(key=management,value=total_harvest)
+dt.comp2_r$rate <- (dt.comp2_r$FMSY/dt.comp2_r$SQ)-1
+dt.comp2_r$Rate <- ifelse(dt.comp2_r$rate < 0, "below", "above")
+dt.comp2_r <- dt.comp2_r %>% dplyr::filter(alphabet_pref==comp_name) 
+g1 <- ggplot(dt.comp2_r, aes(x = time,y = rate, fill = Rate)) +
+  theme_light(base_family = "HiraKakuPro-W3",base_size = 3)+ 
+  #labs(x="年", y="割合") +
+  labs(title = comp_name) +
+  #theme(axis.text=element_text(size=18),
+    #    axis.title=element_text(size=18,face="bold")) +
+  scale_fill_manual(values=c("above"="#00552e","below"="#68be8d")) +
+  geom_bar(stat = "identity",position = "dodge") +
+  #scale_y_continuous(labels=scaleFUN) +
+  theme(legend.position = 'none') +
+  theme(axis.title.x = element_blank(), axis.title.y = element_blank())
+assign(paste(comp_name),g1,
+env=.GlobalEnv)
+
+setwd("~/Dropbox/Upside_Kei.K/Upside_project/Current_Working_Data/timeseries/bar")
+mat1 <- rbind(c(NA,NA,NA,NA,NA,30,29,NA,1,1),
+                c(NA,33,32,36,NA,31,28,NA,1,1),
+              　c(NA,34,35,37,NA,NA,NA,NA,NA,NA),
+                c(NA,38,NA,NA,NA,NA,NA,NA,NA,2),
+                c(NA,NA,NA,NA,NA,NA,NA,NA,5,3),
+                c(39,NA,NA,NA,NA,NA,NA,NA,6,4),
+                c(NA,NA,NA,NA,NA,NA,NA,12,NA,7),
+                c(NA,NA,NA,NA,NA,14,13,NA,NA,8),
+                c(NA,NA,NA,NA,NA,15,NA,NA,10,9),
+                c(27,24,23,21,19,NA,NA,NA,11,NA),
+                c(NA,26,25,NA,20,18,17,16,NA,NA),
+                c(NA,NA,NA,NA,22,NA,NA,NA,NA,NA))
+mat2 <- rbind(c(NA,NA,NA,NA,30,29,NA,1,1),
+                c(33,32,36,NA,31,28,NA,1,1),
+              　c(34,35,37,NA,NA,NA,NA,NA,NA),
+                c(38,NA,NA,NA,NA,NA,NA,2,3),
+                c(NA,NA,NA,NA,NA,NA,NA,5,4),
+                c(39,NA,NA,NA,NA,NA,NA,6,7),
+                c(NA,NA,24,21,19,13,12,10,8),
+                c(NA,27,25,23,20,15,14,11,9),
+                c(NA,NA,26,22,18,17,16,NA,NA))
+a<-grid.arrange(hokkaido,aomori,iwate,miyagi,akita,yamagata,fukushima,ibaraki,tokyo,kanagawa,chiba,niigata,toyama,ishikawa,fukui,shizuoka,aichi,mie,kyoto,osaka,hyogo,wakayama,tottori,shimane,okayama,hiroshima,yamaguchi,tokushima,kagawa,ehime,kochi,fukuoka,saga,nagasaki,kumamoto,oita,miyazaki,kagoshima,okinawa,layout_matrix = mat1)
+b<-grid.arrange(hokkaido,aomori,iwate,miyagi,akita,yamagata,fukushima,ibaraki,tokyo,kanagawa,chiba,niigata,toyama,ishikawa,fukui,shizuoka,aichi,mie,kyoto,osaka,hyogo,wakayama,tottori,shimane,okayama,hiroshima,yamaguchi,tokushima,kagawa,ehime,kochi,fukuoka,saga,nagasaki,kumamoto,oita,miyazaki,kagoshima,okinawa,layout_matrix = mat2)
+#setwd("~/Dropbox/Upside_Kei.K/Upside_project/Current_Working_Data/timeseries/bar")
+plot(a)
+plot(b)
+#ggsave("figure_map_a.png") 
+
+```
+
+## Section 24 グラフの配置 (species)
+southern_bluefin_tuna_single_stockはFMSY政策下ではFvFMSYが１を下回る続け、操作の妨げになるのでこのチャンクでは抜く
+```{r}
+#if(Temp_User==1){setwd("/Users/keikawamura/Upside/figure/Bar_chart_of_the_species_comparison_FMSY_and_SQ")}else if
+#(Temp_User==2){setwd("~/Dropbox/#_0_gakuGroup/Upside_Kei.K/Output")}else if
+#(Temp_User==3){setwd("C:/Users/aquak/Dropbox/Upside_Kei.K/timeseries/fish_stock/harvest")}
+
+fish_list<-data.frame(fish_stock=unique(dt.comp1$fish_stock))
+fish_list$fish_stock<-as.character(fish_list$fish_stock)
+fish_list_rm_south_tuna <- fish_list %>%
+  filter(!fish_stock=="southern_bluefin_tuna_single_stock")
+for (n in 1:nrow(fish_list_rm_south_tuna)) {
+  fish_name=fish_list_rm_south_tuna[n,1]
+  
+fish1<-dt.comp1 %>%
+  filter(management=="FMSY" | management=="SQ") %>%
+  filter(fish_stock==fish_name) %>%
+  group_by(management,time) %>%
+  mutate(fish_total_harvest = sum(pref_catch)) %>%
+  ungroup() %>%
+  select("time","fish_total_harvest","management")
+fish2<-unique(fish1)
+fish2 <- fish2 %>% 
+  spread(key = management,value = fish_total_harvest)
+cutcut <- function(x,digits){
+  return (floor(x * 10^digits) /10^digits)
+}
+fish2$rate <- (fish2$FMSY/fish2$SQ)-1
+fish2$Rate <- ifelse(fish2$rate < 0, "below", "above")
+max_r <- max(fish2$rate)
+min_r <- min(fish2$rate)
+if(min_r>0){min_r <- 0}else{min_r <- cutcut(min_r,digits=2)}
+
+fish_name1<-paste(fish_name,"Comparison_of_FMSY_and_SQ",sep="_")
+g1 <- ggplot(fish2, aes(x = time,y = rate, fill = Rate)) +
+  theme_light(base_family = "HiraKakuPro-W3",base_size = 10)+ 
+  labs(x="年", y="割合") +
+  labs(title = fish_name1) +
+  ylim(min_r,max_r) +
+  #theme(axis.text=element_text(size=18),
+    #    axis.title=element_text(size=18,face="bold")) +
+  scale_fill_manual(values=c("above"="#00552e","below"="#68be8d")) +
+  geom_bar(stat = "identity",position = "dodge") +
+  #scale_y_continuous(labels=scaleFUN) +
+  theme(legend.position = 'none') +
+  theme(axis.title.x = element_blank(), axis.title.y = element_blank())
+print(g1)
+file_name=paste(fish_name1,".png", sep="") 
+#ggsave(file_name)
+}
+```
+
+## Section 25 各県の漁獲魚種割合
+
+漁獲量・生産額・かなえさんのデータそれぞれの魚種の範囲が異なるため、一部の魚種の値がratio_harvest_bmsyやratio_profit_bmsyでは弾かれ、totalの合計値が１にならない。言い換えると資源評価等の様々な操作が済んでいない魚種もdt.weightやdt.priceには存在するが、かなえさんのデータ（dt.comp）にはないためBvBMSYがわからず最終的に中立(どちらにも属さない)な値として検出される。
+```{r}
+#if(Temp_User==1){setwd("/Users/keikawamura/Dropbox/Upside_Kei.K/Upside_project/Current_Working_Data")}else if
+#(Temp_User==2){setwd("~/Dropbox/#_0_gakuGroup/Upside_Kei.K/Output")}else if
+#(Temp_User==3){setwd("C:/Users/aquak/Dropbox/Upside_Kei.K/timeseries/prefecture/harvest")}
+
+#dt.weightに含まれている魚種のリスト
+list_ratio_harvest <- dt.weight1 %>%
+  select(fish_stock) %>%
+  unique() %>%
+  mutate(exist_h = "dt.weight")
+#dt.priceに含まれている魚種のリスト
+list_ratio_profit <- dt.price %>%
+  select(fish_stock) %>%
+  unique() %>%
+  mutate(exist_p = "dt.price")
+#dt.comp1に含まれている魚種のリスト
+list_comp <- dt.comp1 %>%
+  select(fish_stock) %>%
+  unique() %>%
+  mutate(exist_c = "dt.comp")
+#2015年の漁獲魚種割合
+ratio_harvest_2015 <- dt.weight1 %>% 
+  filter(year=="2015") %>%
+  group_by(alphabet_pref) %>%
+  mutate(sum_pref=sum(weight_t)) %>%
+  ungroup() %>%
+  group_by(alphabet_pref,fish_stock) %>%
+  mutate(sum_pref_sp=sum(weight_t)) %>%
+  ungroup() %>%
+  select(fish_stock,alphabet_pref,sum_pref,sum_pref_sp) %>%
+  unique() %>%
+  mutate(ratio=(sum_pref_sp)/(sum_pref)) %>%
+  select(fish_stock,alphabet_pref,ratio) %>%
+  spread(key = alphabet_pref,value = ratio)
+#1964~2015年の漁獲魚種割合
+ratio_harvest <- dt.weight1 %>%
+  group_by(alphabet_pref) %>%
+  mutate(sum_pref=sum(weight_t)) %>%
+  ungroup() %>%
+  group_by(alphabet_pref,fish_stock) %>%
+  mutate(sum_pref_sp=sum(weight_t)) %>%
+  ungroup() %>%
+  select(fish_stock,alphabet_pref,sum_pref,sum_pref_sp) %>%
+  unique() %>%
+  mutate(ratio=(sum_pref_sp)/(sum_pref)) %>%
+  select(fish_stock,alphabet_pref,ratio) %>%
+  spread(key = alphabet_pref,value = ratio)
+
+#write.csv(ratio_harvest_2015, file = "ratio_pref_harvest_species_2015.csv",fileEncoding = "CP932")
+#write.csv(ratio_harvest, file = "ratio_pref_harvest_species.csv",fileEncoding = "CP932")
+
+#time=1(2015)時点でのBvBMSYが１を上回るか否かを確認。１を上回る場合はFMSY政策の場合の漁獲制限の対象
+list_fmsy_sq_bmsy <- dt.comp1 %>%
+  filter(time==1) %>%
+  select(fish_stock,BvBMSY) %>%
+  unique()
+#BvBMSYが１を上回るものはSafety,１を下回るものをRestrictionと新たな列statusに格納
+list_fmsy_sq_bmsy$status <- ifelse(list_fmsy_sq_bmsy$BvBMSY < 1, "Restriction", "Safety")
+#ratio_harvest_bmsyに漁獲制限対象のデータ（漁獲割合）を格納
+ratio_harvest_bmsy <- ratio_harvest %>%
+  left_join(list_fmsy_sq_bmsy,by="fish_stock") %>%
+  filter(status=="Restriction") %>%
+  select(-c(status,BvBMSY))
+#欠損値が存在すると計算不可能なので０に置き換える
+ratio_harvest_bmsy[is.na(ratio_harvest_bmsy)] <- 0
+#各列の合計値を別に作成し、ratio_harvest_bmsyと結合
+a<-data.frame(fish_stock="total")
+b<-t(data.frame(a=colSums(ratio_harvest_bmsy[1:nrow(ratio_harvest_bmsy),2:40])))
+c<-cbind(a,b)
+ratio_harvest_bmsy <- rbind(ratio_harvest_bmsy,c)
+
+#同様に生産額における漁獲制限対象魚種の割合を計算する。用いるデータはdt.price  
+dt.price<-dt.price %>%
+  filter(value_million_JPY>0)
+ratio_profit <- dt.price %>%
+  group_by(alphabet_pref) %>%
+  mutate(sum_pref=sum(value_million_JPY)) %>%
+  ungroup() %>%
+  group_by(alphabet_pref,fish_stock) %>%
+  mutate(sum_pref_sp=sum(value_million_JPY)) %>%
+  ungroup() %>%
+  select(fish_stock,alphabet_pref,sum_pref,sum_pref_sp) %>%
+  unique() %>%
+  mutate(ratio=(sum_pref_sp)/(sum_pref)) %>%
+  select(fish_stock,alphabet_pref,ratio) %>%
+  spread(key = alphabet_pref,value = ratio)
+
+ratio_profit_bmsy <- ratio_profit %>%
+  left_join(list_fmsy_sq_bmsy,by="fish_stock") %>%
+  filter(status=="Restriction") %>%
+  select(-c(status,BvBMSY))
+ratio_profit_bmsy[is.na(ratio_profit_bmsy)] <- 0
+a<-data.frame(fish_stock="total")
+b<-t(data.frame(a=colSums(ratio_profit_bmsy[1:nrow(ratio_profit_bmsy),2:40])))
+c<-cbind(a,b)
+ratio_profit_bmsy <- rbind(ratio_profit_bmsy,c)
+
+#write.csv(ratio_harvest_bmsy, file = "ratio_pref_harvest_bmsy.csv",fileEncoding = "CP932")
+#write.csv(ratio_profit_bmsy, file = "ratio_pref_profit_bmsy.csv",fileEncoding = "CP932")
+
+#漁獲制限対象外の魚種の漁獲割合を計算
+ratio_harvest_bmsy_t <- ratio_harvest %>%
+  left_join(list_fmsy_sq_bmsy,by="fish_stock") %>%
+  filter(status=="Safety") %>%
+  select(-c(status,BvBMSY))
+ratio_harvest_bmsy_t[is.na(ratio_harvest_bmsy_t)] <- 0
+a<-data.frame(fish_stock="total")
+b<-t(data.frame(a=colSums(ratio_harvest_bmsy_t[1:nrow(ratio_harvest_bmsy_t),2:40])))
+c<-cbind(a,b)
+ratio_harvest_bmsy_t <- rbind(ratio_harvest_bmsy_t,c)
+
+ratio_profit_bmsy_t <- ratio_profit %>%
+  left_join(list_fmsy_sq_bmsy,by="fish_stock") %>%
+  filter(status=="Safety") %>%
+  select(-c(status,BvBMSY))
+ratio_profit_bmsy_t[is.na(ratio_profit_bmsy_t)] <- 0
+a<-data.frame(fish_stock="total")
+b<-t(data.frame(a=colSums(ratio_profit_bmsy_t[1:nrow(ratio_profit_bmsy_t),2:40])))
+c<-cbind(a,b)
+ratio_profit_bmsy_t <- rbind(ratio_profit_bmsy_t,c)
+
+#漁獲制限対象魚種の割合と漁獲制限対象外魚種の割合を足しても１にはならない。これは用いたデータに含まれる魚種構成が異なることによる。BvBMSYの数値がない魚種の割合がどこにも反映されていない。
+
+
+
+```
+
+## Section 26  各県のSQでの魚種構成のTimeseriesのデータフレーム作成
+
+```{r}
+for (n in 1:nrow(translation_pref_remove_na)) { 
+comp_name=translation_pref_remove_na[n,2]
+#setwd("~/Dropbox/Upside_Kei.K/Upside_project/Current_Working_Data/timeseries/bar")
+dt.comp1 <- dt.comp1 %>% 
+  group_by(management,time,alphabet_pref) %>%
+  mutate(total_pref_year_harvest=sum(pref_catch))  %>%
+  ungroup()
+
+#ts_sp = Timeseries species
+ts_sp <- dt.comp1 %>%
+  filter(alphabet_pref==comp_name) %>%
+  filter(management=="SQ") %>%
+  mutate(ratio = (pref_catch)/(total_pref_year_harvest)) %>%
+  select(time,fish_stock,ratio) %>%
+  unique() %>%
+  spread(key=time,value=ratio)
+
+comp_name4 <- paste(comp_name,"_timeseries_species")
+assign(paste(comp_name4),ts_sp,
+env=.GlobalEnv)
+file_name <- paste("harvest_",comp_name,".png")
+#ggsave(file_name)
+}
+
+```
+
+## Section 27 過去データと結びつけたタイムシリーズの画像作成
+
+```{r}
+#全データの魚種リストを作成
+list_all <- merge(list_ratio_harvest,list_ratio_profit,all=TRUE)
+list_all <- merge(list_all,list_comp,all=TRUE)
+
+#かなえさんのデータに合わせる為、list_compを用いる
+dt.weight1_1 <- merge(dt.weight,list_comp,by="fish_stock") %>%
+  mutate(pref_catch = weight_t)
+
+#必要とされるyear,weight_tを抽出し、欠損値を除き、年間漁獲量を計算。過去データなのでmanagementにはHistoricalを付与
+dt.weight1_2 <- dt.weight1_1 %>%
+  select(year,weight_t) %>%
+  filter(weight_t > 0) %>%
+  group_by(year) %>%
+  summarise(total_harvest=sum(weight_t)) %>%
+  ungroup() %>%
+  mutate(management="Historical")
+
+#timeからyearに変更
+Temp_Data_Catch_r <- Temp_Data_Catch
+Temp_Data_Catch_r$year <- Temp_Data_Catch_r$time+2015
+
+#かなえさんのデータも同様
+dt.comp1_1 <- Temp_Data_Catch_r %>%
+  filter(management=="SQ"|management=="FMSY" | management == "econOpt") %>%
+  filter(harvest1 > 0) %>%
+  #filter(profit1 > 0) %>%
+  #select(year,management,harvest1,profit1) %>%
+  group_by(year,management) %>%
+  mutate(total_harvest=sum(harvest1)) %>%
+  select(year,total_harvest,management) %>%
+  unique()
+  #mutate(total_profit=sum(profit1)) %>%
+  #select(year,management,total_harvest,total_profit) %>%
+  #unique()
+
+#2つを結合
+dt.comp1_2 <- merge(dt.comp1_1,dt.weight1_2,all=TRUE)
+
+#単位を100万トンに変更
+dt.comp1_2$Harvest_MT <- dt.comp1_2$total_harvest/1000000
+
+#プロット
+g1 <- ggplot(dt.comp1_2,aes(x=year,y=Harvest_MT,colour=management,shape=management)) +
+  geom_point() +
+  theme_linedraw(base_size=10) +
+   scale_x_continuous(breaks=seq(1965,2065,10)) +
+  ylim(0,10) +
+  scale_color_manual(values=c("FMSY"="#35a16b","SQ"="#ff2800","Historical"="#95949a","econOpt"="#0041ff")) 
+plot(g1)
+
+#biomassデータの抽出
+setwd("~/Dropbox/Upside_Kei.K/Upside_project/Current_Working_Data/Datasets")
+
+#過去の資源量推定結果をpast_biomassに格納。 94魚種が含まれており、基本としている93魚種から1種違いがあるが、それはNAである。
+past_biomass <- read_csv("2japan_GUM_results_K100_190116.csv")
+
+#Harvest同様に操作
+past_biomass1 <- past_biomass %>%
+  select(year,Biomass) %>%
+  filter(Biomass>0) %>%
+  group_by(year) %>%
+  summarise(Biomass_MT=sum(Biomass)/1000000) %>%
+  mutate(management="Historical")
+estimate_biomass <- Temp_Data_Catch_r %>%
+  filter(management=="SQ" | management=="FMSY") %>%
+  select(year,biomass,management) %>%
+  filter(biomass>0) %>%
+  group_by(year,management) %>%
+  summarise(Biomass_MT=sum(biomass)/1000000)
+all_biomass <- merge(past_biomass1,estimate_biomass,all=TRUE)
+
+#managementがfactorなのでlevelsを用いて順番を付与する
+all_biomass$management <- factor(all_biomass$management,levels=c("FMSY","SQ","Historical"))
+
+#gridarrangeでx軸を共有するためにx軸周りを消去
+g2 <- ggplot(all_biomass,aes(x=year,y=Biomass_MT,colour=management,shape=management)) +
+  geom_point() +
+  theme_linedraw(base_size=10) +
+  ylim(0,200) +
+  theme(axis.text.x = element_blank(), axis.title.x = element_blank()) +
+  scale_color_manual(values=c("FMSY"="#35a16b","SQ"="#ff2800","Historical"="#95949a")) 
+plot(g2)
+
+g4 <- grid.arrange(g2,g1)
+plot(g4)
+
+#msy_listというmsyデータが存在する魚種のリストを作成。Kobe plot作成にはmsyデータが必要になる
+names(translation_kanae_kei) <- c("Fishery","fish_stock")
+msy_list <- merge(past_biomass,translation_kanae_kei,by="Fishery") %>%
+  select(fish_stock,MSY) %>%
+  unique() %>%
+  mutate(num=1:93)
+
+#神戸プロットのためのmsy情報が付与されたデータフレームdt.kobeを作成
+dt.kobe <- merge(msy_list,Temp_Data_Catch_r,by="fish_stock")
+
+#神戸プロットをするためのfunctionを読み込み
+setwd("~/Dropbox/Upside_Kei.K/Upside_project/Original_Data/upside_20181225/GUM_KK/R")
+source("ggKobe.R")
+
+#time=1の時の領域ごとのデータを付与。右上、右下、左下、左上の順に１〜４までの数字を振っていく 1.00に関しては上位のエリアに含める
+dt.kobe1 <- dt.kobe %>%
+  filter(FvFMSY1 >= 1 & BvBMSY < 1) %>%
+  mutate(area = "1")
+dt.kobe2 <- dt.kobe %>%
+  filter(FvFMSY1 < 1 & BvBMSY < 1) %>%
+  mutate(area = "2")
+dt.kobe3 <- dt.kobe %>%
+  filter(FvFMSY1 < 1 & BvBMSY >= 1) %>%
+  mutate(area = "3")
+dt.kobe4 <- dt.kobe %>%
+  filter(FvFMSY1 >= 1 & BvBMSY >= 1) %>%
+  mutate(area = "4")
+dt.kobe <- rbind(dt.kobe1,dt.kobe2,dt.kobe3,dt.kobe4)
+dt.kobe <- dt.kobe %>%
+  group_by(management,time) %>%
+  mutate(total_h = sum(harvest1)) %>%
+  ungroup() %>%
+  group_by(management,time,area) %>%
+  mutate(total_h_area = sum(harvest1)) %>%
+  ungroup() %>%
+  mutate(rate_kobe_plot_area = total_h_area/total_h) %>%
+  mutate(BvBMSY_judgment = ifelse(BvBMSY >= 1.1,"high",ifelse(BvBMSY <= 0.9,"low","mid")))
+
+past_biomass1 <- past_biomass %>%
+  filter(FvFmsy >= 1 & BvBmsy < 1) %>%
+  mutate(area = "1")
+past_biomass2 <- past_biomass %>%
+  filter(FvFmsy < 1 & BvBmsy < 1) %>%
+  mutate(area = "2")
+past_biomass3 <- past_biomass %>%
+  filter(FvFmsy < 1 & BvBmsy >= 1) %>%
+  mutate(area = "3")
+past_biomass4 <- past_biomass %>%
+  filter(FvFmsy >= 1 & BvBmsy >= 1) %>%
+  mutate(area = "4")
+past_biomass_area <- rbind(past_biomass1,past_biomass2,past_biomass3,past_biomass4)
+
+
+#2015年・SQ政策時の神戸プロット
+#SQでもFMSYでも、どのシナリオでもtime=1の時にはBvBMSY,FvFMSYの値が一緒
+dt.kobe_sq <- dt.kobe %>%
+  filter(time==50 & management=="SQ") %>%
+  select(year,management,fish_stock,MSY,BvBMSY,FvFMSY1,num,area,rate_kobe_plot_area)
+g3 <- ggKobe(dt.kobe_sq, xvar = "BvBMSY", yvar = "FvFMSY1",plot_density = F,
+                    color_name = "RAM",
+                    plot_panel_colors = F,
+                    summary_points = F) +
+  labs(title = "SQ_after50years")　+
+  xlab("BvBmsy") +
+  ylab("FvFmsy") +
+  theme_bw() +
+  geom_text(mapping=aes(label = num),hjust=0.5, vjust=-0.5) #各点に数字を振る
+plot(g3)
+
+#過去データ利用の2015の神戸プロット　→　83魚種
+dt.kobe_past <- past_biomass_area %>%
+  merge(translation_kanae_kei) %>%
+  left_join(msy_list,by="fish_stock") %>%
+  filter(year =="2015") %>%
+  select(year,fish_stock,MSY.x,BvBmsy,FvFmsy,num,area)
+names(dt.kobe_past) <- c("year","fish_stock","MSY","BvBmsy","FvFmsy","num","area")
+g3 <- ggKobe(dt.kobe_past, xvar = "BvBmsy", yvar = "FvFmsy",plot_density = F,
+                    color_name = "RAM",
+                    plot_panel_colors =F,
+                    summary_points = F) +
+  labs(title = "Current(2015)") +
+  theme_bw() +
+  geom_text(mapping=aes(label = num),hjust=0.5, vjust=-0.5)
+plot(g3)
+
+#過去データを利用すると魚種数が少ないので、シミュレーション結果のtime=1を2015相当と考えしよう　→　93魚種
+dt.kobe_current <- dt.kobe %>%
+  filter(time==1 & management=="SQ") %>%
+  select(year,management,fish_stock,MSY,BvBMSY,FvFMSY1,num,area,rate_kobe_plot_area)
+g3 <- ggKobe(dt.kobe_current, xvar = "BvBMSY", yvar = "FvFMSY1",plot_density = F,
+                    color_name = "RAM",
+                    plot_panel_colors = F,
+                    summary_points = F) +
+  labs(title = "SQ_time=1")　+
+  xlab("BvBmsy") +
+  ylab("FvFmsy") +
+  theme_bw() +
+  geom_text(mapping=aes(label = num),hjust=0.5, vjust=-0.5) #各点に数字を振る
+plot(g3)
+
+#50年後・FMSY政策時の神戸プロット
+dt.kobe_fmsy <- dt.kobe %>%
+  filter(time == 50 ) %>%
+  filter(management =="FMSY") %>%
+  select(year,management,fish_stock,MSY,BvBMSY,FvFMSY1,num,area,rate_kobe_plot_area)
+g3 <- ggKobe(dt.kobe_fmsy, xvar = "BvBMSY", yvar = "FvFMSY1",plot_density = F,
+                    color_name = "RAM",
+                    plot_panel_colors =F,
+                    summary_points = F) +
+  labs(title = "FMSY_after50years") +
+  theme_bw() +
+  geom_text(mapping=aes(label = num),hjust=0.5, vjust=-0.5)
+plot(g3)
+
+# 2015(GUM):dt.kobe_past  2015(SQ):dt.kobe_current  2065(sq):dt.kobe_sq  2065(fmsy):dt.kobe_fmsy
+
+#kobe plotのエリア毎に割合を算出、BvBMSYが1以下の魚種の漁獲量割合の算出
+dt.kobe_select <- dt.kobe %>%
+  select(fish_stock,time,management,area,rate_kobe_plot_area,BvBMSY_judgment)
+dt.kobe_select1 <- merge(dt.comp1,dt.kobe_select)
+dt.kobe_select1 <- dt.kobe_select1 %>%
+  group_by(alphabet_pref,time,management,BvBMSY_judgment) %>%
+  mutate(BvBMSY_harvest = sum(pref_catch)) %>%
+  ungroup() %>%
+  mutate(BvBMSY_rate_harvest = BvBMSY_harvest/total_pref_year_harvest) %>%
+  group_by(region,time,management,BvBMSY_judgment) %>%  #地方毎の割合算出
+  mutate(BvBMSY_harvest_region = sum(pref_catch)) %>%
+  ungroup() %>%
+  group_by(region,time,management) %>%
+  mutate(total_region_year_harvest = sum(pref_catch)) %>%
+  ungroup() %>%
+  mutate(BvBMSY_rate_harvest_region = BvBMSY_harvest_region/total_region_year_harvest)
+dt.kobe_select1_1 <- dt.kobe_select1 %>%
+  group_by(time,management) %>%
+  summarise(sum(pref_catch))
+for (n in 1:nrow(translation_pref_remove_na)) {
+  comp_name=translation_pref_remove_na[n,2]
+
+dt.kobe_select1 <- dt.kobe_select1 %>%
+  filter(management=="SQ" | management=="FMSY")
+
+dt.kobe_select_all <- dt.kobe_select1 %>%
+  filter(alphabet_pref==comp_name)
+  
+dt.kobe_select1_low <- dt.kobe_select1 %>%
+  filter(BvBMSY_judgment=="low" & alphabet_pref==comp_name) %>%
+  select(time,management,BvBMSY,FvFMSY1,BvBMSY_rate_harvest,total_pref_year_harvest,BvBMSY_rate_harvest_region,total_region_year_harvest) %>%
+  unique()
+dt.kobe_select1_high <- dt.kobe_select1 %>%
+  filter(BvBMSY_judgment=="high" & alphabet_pref==comp_name) %>%
+  select(time,management,BvBMSY_rate_harvest,BvBMSY,FvFMSY1,total_pref_year_harvest,BvBMSY_rate_harvest_region,total_region_year_harvest) %>%
+  unique()
+dt.kobe_select1_mid <- dt.kobe_select1 %>%
+  filter(BvBMSY_judgment=="mid" & alphabet_pref==comp_name) %>%
+  select(time,management,BvBMSY,FvFMSY1,BvBMSY_rate_harvest,total_pref_year_harvest,BvBMSY_rate_harvest_region,total_region_year_harvest) %>%
+  unique()
+comp_name1 <- paste(comp_name,"_BvBMSY_timeseries_and_Harvest",sep = "")
+
+dt.kobe_select1_low$total_pref_year_harvest_1000t <- dt.kobe_select1_low$total_pref_year_harvest/1000
+dt.kobe_select1_high$total_pref_year_harvest_1000t <- dt.kobe_select1_high$total_pref_year_harvest/1000
+dt.kobe_select1_mid$total_pref_year_harvest_1000t <- dt.kobe_select1_mid$total_pref_year_harvest/1000
+
+  g1 <- ggplot(dt.kobe_select1_mid, aes(x = time,y = BvBMSY_rate_harvest,group=factor(management),fill = management)) +
+  theme_light(base_family = "HiraKakuPro-W3")+ 
+  ylim(0,1) + 
+  labs(title = comp_name1,x="Time",y="Rate_of_harvest_of_fish_stock_with_Bmsy<1") +
+  scale_y_continuous(sec.axis = sec_axis(~ ., name = "Harvest(1000t)")) +
+  #labs(x="年", y="BvBMSY=<1の割合") +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  geom_bar(stat = "identity",position = "dodge") +
+  #theme(legend.title = element_text(face = "bold", size = 10, hjust = 0),legend.key.size = unit(0.5, "cm")) +
+  scale_fill_manual(values=c("FMSY"="#35a16b","SQ"="#ff2800"))
+  #geom_line(data = dt.kobe_select1_low,aes(x = time,y = total_pref_year_harvest,group = factor(management)))
+  #theme(legend.position = 'none') 
+
+  
+ g2 <- ggplot(dt.kobe_select1_mid,aes(x=time,y=total_pref_year_harvest_1000t,group=factor(management),color=management)) +
+   scale_y_continuous(sec.axis = sec_axis(~ ., name = "Harvest(1000t)")) +
+   geom_line() +
+   geom_point() +
+    scale_color_manual(values=c("FMSY"="#35a16b","SQ"="#ff2800")) 
+
+g1 <- ggplotGrob(g1)
+g2 <- ggplotGrob(g2)
+#names()して、gTreeにグラフ情報が含まれている。さらにその中のchildrenに詳細が含まれている
+g1$grobs[[9]]$gp <- gpar(alpha = 0)
+
+g2_point_and_line <- g2$grobs[[6]]$children[3:4]
+g2_lab_r <- g2$grobs[[9]]
+
+g1_se <- g1 %>%
+  gtable_add_grob(g2_point_and_line, 7, 5, name = c("a", "b")) %>% 
+  gtable_add_grob(g2_lab_r, 7, 6)
+#plot(g1_se)
+dt.kobe_select1_mid <- dt.kobe_select1_mid %>%     
+  select(time,BvBMSY_rate_harvest,management) %>%
+  unique()
+g3 <- ggplot(dt.kobe_select1_mid,aes(x=time,y=BvBMSY_rate_harvest,group=factor(management),color=management)) +
+  geom_point() +
+  geom_line() +
+  geom_smooth(method = "lm",formula = y~x,se=F) +
+  ylim(0,1) +
+  labs(title = paste(comp_name,"_Rate_of_harvest(0.9<BvBmsy<1.1)",sep = "")) +
+  scale_color_manual(values=c("FMSY"="#35a16b","SQ"="#ff2800")) 
+plot(g3)
+
+#if(Temp_User==1){setwd("/Users/keikawamura/Google ドライブ/Upside_グラフ集/Section27_過去データと結びつけたタイムシリーズの画像作成")}else if
+#(Temp_User==2){setwd("~/Dropbox/#_0_gakuGroup/Upside_Kei.K")}else if
+#(Temp_User==3){setwd("C:/Users/aquak/Dropbox/Upside_Kei.K")}
+
+File_name<-paste(comp_name,"_Rate_of_harvest(0.9<BvBmsy<1.1)",".png",sep = "")
+#ggsave(filename = File_name) 
+}
+
+
+```
+
+## Section 28 三陸(aomori,iwate,miyagi)のまとめ
+
+```{r}
+options(scipen=999,digits = 3)
+
+#各年の魚種数リスト
+list <- dt.comp1 %>%
+  mutate(year = time+2015) %>%
+  select(alphabet_pref,year,fish_stock) %>%
+  unique() %>%
+  group_by(alphabet_pref,year) %>%
+  mutate(count = n()) %>%
+  select(year,alphabet_pref,count) %>%
+  unique() %>%
+  spread(key = alphabet_pref, value = count) 
+list_hh <- dt.weight %>%
+  select(alphabet_pref,year,fish_stock) %>%
+  group_by(alphabet_pref,year) %>%
+  mutate(count = n()) %>%
+  select(alphabet_pref,year,count) %>%
+  unique() %>%
+  spread(key = alphabet_pref,value = count)
+list_pp <- dt.price%>%
+  select(alphabet_pref,year,fish_stock) %>%
+  group_by(alphabet_pref,year) %>%
+  mutate(count = n()) %>%
+  select(alphabet_pref,year,count) %>%
+  unique() %>%
+  spread(key = alphabet_pref,value = count)
+list_p <- rbind(list,list_pp) #harvestの魚種数推移リスト
+list_h <- rbind(list,list_hh) #profitの魚種数推移リスト
+#しかし、かなえさんと一致する魚種数となると話が変わってくるので、そちらもみる
+
+#過去データの三陸3県抽出＋各年の各県のHarvestを計算し、Historicalをmanagmentに付与
+dt.weight1_2 <- dt.weight1_1 %>%
+  filter(weight_t > 0 ) %>%
+  filter(year > 1964) %>%
+  filter(alphabet_pref =="aomori" | alphabet_pref == "iwate" | alphabet_pref == "miyagi") %>%
+  group_by(year,alphabet_pref) %>%
+  mutate(total_harvest=sum(weight_t)) %>%
+  ungroup() %>%
+  mutate(management="Historical") %>%
+  mutate(pref_catch = weight_t)
+
+#selectで絞り、mergeしやすくする
+dt.weight1_3 <- dt.weight1_2 %>%
+  select(year,alphabet_pref,total_harvest,management) %>%
+  unique()
+
+#Upsideの推定の中で計算
+dt.comp1_1 <- dt.comp1 %>%
+  filter(management=="SQ"|management=="FMSY") %>%
+  filter(pref_catch > 0) %>%
+  filter(alphabet_pref =="aomori" | alphabet_pref == "iwate" | alphabet_pref == "miyagi") %>%
+  mutate(year = time + 2015) %>%
+  #filter(profit1 > 0) %>%
+  #select(year,management,harvest1,profit1) %>%
+  group_by(year,management,alphabet_pref) %>%
+  mutate(total_harvest=sum(pref_catch)) %>%
+  select(year,time,alphabet_pref,management,fish_stock,pref_catch,pref_value,total_harvest)
+
+#selectでmergeし易く変形
+dt.comp1_3 <- dt.comp1_1 %>%
+  select(year,total_harvest,management,alphabet_pref) %>%
+  unique()
+
+#merge
+dt.comp1_2 <- merge(dt.comp1_3,dt.weight1_3,all=TRUE)
+dt.comp1_2_all <- merge(dt.comp1_1,dt.weight1_2,all = TRUE)
+
+dt.comp1_2 <- left_join(dt.comp1_2,translation_pref_remove_na,by=c("alphabet_pref"="alphabet"))
+dt.comp1_2$prefecture <- factor(dt.comp1_2$prefecture,levels = c("青森","岩手","宮城"))
+#単位を1万トンに統一
+dt.comp1_2$total_harvest <- dt.comp1_2$total_harvest/10000
+#プロット sanriku divide by prefecture using facet_wrap()
+g1 <- ggplot(dt.comp1_2,aes(x=year,y=total_harvest,colour=management)) +
+  geom_line() +
+  theme_bw(base_size=10) +
+  scale_x_continuous(breaks=seq(1965,2065,10)) +
+  theme_bw(base_family = "Hiragino Mincho Pro W3") +
+  facet_wrap(~prefecture) +
+  scale_color_manual(values=c("FMSY"="#35a16b","SQ"="#ff2800","Historical"="#95949a")) +
+  theme(axis.text.x = element_text(angle = 90,hjust = 1)) +
+  xlab("年") +
+  ylab("漁獲量_10000t")+
+  labs(title = "三陸三県の総漁獲量時系列データ",color = "種類") +
+  theme(legend.position="none") 
+  
+plot(g1)
+
+#sanriku plot (aomori,iwate,miyagi) total
+dt.comp_san <- dt.comp1_2 %>%
+  group_by(management,year) %>%
+  summarize(total_harvest = sum(total_harvest)) %>%
+  unique()
+g1 <- ggplot(dt.comp_san,aes(x=year,y=total_harvest,colour=management)) +
+  geom_line() +
+  theme_bw(base_size=10) +
+   scale_x_continuous(breaks=seq(1965,2065,10)) +
+  scale_color_manual(values=c("FMSY"="#35a16b","SQ"="#ff2800","Historical"="#95949a")) +
+  theme_bw(base_family = "Hiragino Mincho Pro W3") + 
+  xlab("年") +
+  ylab("漁獲量_10000t") +
+  labs(title = "三陸の漁獲量の時系列データ") +
+   theme(legend.position="none")+
+  theme(axis.text.x = element_text(angle = 90,hjust = 1)) 
+plot(g1)
+
+#データのつなぎ目の差を各県、魚種毎に見る
+b1 <- merge(dt.weight1_1,dt.comp1,all=TRUE) 
+b2 <- b1 %>%
+  select(year,fish_stock,pref_catch,alphabet_pref) %>%
+  filter(year == 2015 | year == 2016) %>%
+  unique() %>%
+  spread(key = year ,value =pref_catch)
+names(b2) <- c("fish_stock","alphabet_pref","before","after")
+b2 <- b2  %>%
+  mutate(difference = after-before) %>%
+  select(fish_stock,alphabet_pref,difference) %>%
+  spread(key = alphabet_pref , value = difference) 
+
+#金額の図。SQとFMSYの差の図。　趣旨：三陸における水産改革への影響
+#就業者数
+#三陸全体
+
+#かなえさんのデータに合わせる
+dt.price1_1 <- merge(dt.price,list_comp) %>%
+  mutate(pref_value = value_million_JPY)
+
+dt.price1_2 <- dt.price1_1 %>%
+  select(year,alphabet_pref,value_million_JPY,fish_stock) %>%
+  filter(value_million_JPY >0) %>%
+  filter(alphabet_pref == "aomori" | alphabet_pref == "iwate" | alphabet_pref == "miyagi") %>%
+  group_by(year,alphabet_pref) %>%
+  mutate(total_profit = sum(value_million_JPY)) %>%
+  ungroup() %>%
+  mutate(management = "Historical") %>%
+  mutate(pref_value = (value_million_JPY))
+  
+dt.comp1_1p <- dt.comp1 %>%
+  filter(management=="SQ" | management == "FMSY") %>%
+  filter(pref_value > 0) %>%
+  filter(alphabet_pref =="aomori" | alphabet_pref == "iwate" | alphabet_pref == "miyagi") %>%
+  mutate(year = time + 2015) %>%
+  group_by(year,management,alphabet_pref) %>%
+  mutate(total_profit=sum(pref_value)) %>%
+  #select(year,total_profit,management,alphabet_pref) %>%
+  unique()
+#単位を$から￥に変更
+dt.comp1_1p$pref_value <- (dt.comp1_1p$pref_value*110)/1000000
+dt.comp1_1p$total_profit <- (dt.comp1_1p$total_profit*110)/1000000
+
+dt.comp1_2p <- merge(dt.comp1_1p,dt.price1_2,all=TRUE)
+
+#プロット
+g1 <- ggplot(dt.comp1_2p,aes(x=year,y=total_profit,colour=management)) +
+  geom_line() +
+  theme_linedraw(base_size=10) +
+   scale_x_continuous(breaks=seq(2003,2065,10)) +
+  scale_color_manual(values=c("FMSY"="#35a16b","SQ"="#ff2800","Historical"="#95949a")) +
+  theme(axis.text.x = element_text(angle = 90,hjust = 1)) +
+  theme_gray(base_family = "Hiragino Mincho Pro W3") + 
+   ylab("生産額_単位：100万円") +
+  labs(title = "三陸三県の生産額の時系列データ") +
+  facet_wrap(~ alphabet_pref)
+plot(g1)
+
+#sanriku total (combined profit of aomori iwate miyagi)
+dt.comp_san_p <- dt.comp1_2p %>%
+  group_by(year,management) %>%
+  summarise(total_profit = sum(total_profit))
+g1 <- ggplot(dt.comp_san_p,aes(x=year,y=total_profit,colour=management)) +
+  geom_line() +
+  theme_linedraw(base_size=10) +
+   scale_x_continuous(breaks=seq(2003,2065,10)) +
+  scale_color_manual(values=c("FMSY"="#35a16b","SQ"="#ff2800","Historical"="#95949a")) +
+  theme(axis.text.x = element_text(angle = 90,hjust = 1)) +
+  theme_gray(base_family = "Hiragino Mincho Pro W3") + 
+  ylab("生産額_単位：100万円") +
+  labs(title = "三陸の生産額の時系列データ") +
+  theme(legend.position="none")
+plot(g1)
+
+#過去データの最終年とUpsideの開始年の差の計算。データのつなぎ目の差を各県、魚種毎に見る
+dt.comp1_jpy <- dt.comp1 %>%
+  mutate( pref_value = (pref_value*110)/1000000)
+a1 <- merge(dt.price1_1,dt.comp1_jpy,all=TRUE)
+a2 <- a1 %>%
+  select(year,fish_stock,pref_value,alphabet_pref) %>%
+  filter(year == 2015 | year == 2016) %>%
+  unique() %>%
+  spread(key = year ,value =pref_value)
+names(a2) <- c("fish_stock","alphabet_pref","before","after")
+a2 <- a2  %>%
+  mutate(difference = after-before) %>%
+  select(fish_stock,alphabet_pref,difference) %>%
+  spread(key = alphabet_pref , value = difference) 
+  
+dt.sanriku <- dt.weight1_1 %>%
+  filter(year==2010) %>%
+  filter(fish == "abalone") %>%
+  select(alphabet_pref,pref_catch)
+library(cartogram)
+library(sf)
+library(maptools)
+library(tmap)
+library(rgdal)
+cartogram(map)
+st_sf(dt.sanriku)
+st_as_sf(dt.sanriku)
+aft <- spTransform(dt.sanriku)
+cartogram_cont(dt.sanriku,"pref_catch",3)
+setwd("/Users/keikawamura/Google ドライブ/Upside_Kei/Upside_project/Current_Working_Data/japan_ver81")
+maps <- readOGR(dsn = "/Users/keikawamura/Google ドライブ/Upside_Kei/Upside_project/Current_Working_Data/japan_ver81/japan_ver81.shp",layer = "/Users/keikawamura/Google ドライブ/Upside_Kei/Upside_project/Current_Working_Data/japan_ver81/japan_ver81.shp")
+map <- read_sf("japan_ver81.shp")
+plot(map,col="red")
+ggplot(map) + geom_sf() + coord_sf(datum = NA) + theme_void()
+c <- cartogram_cont(map,"P_NUM",itermax = 7,maxSizeError = 1.01)
+
+###########
+# Load libraries
+library(dplyr)        # data wrangling
+library(cartogram)    # for the cartogram
+library(ggplot2)      # to realize the plots
+library(broom)        # from geospatial format to data frame
+library(tweenr)       # to create transition dataframe between 2 states
+library(gganimate)    # To realize the animation
+library(maptools)     # world boundaries coordinates
+library(viridis) 
+
+# Get the shape file of Africa
+data(wrld_simpl)
+afr=wrld_simpl[wrld_simpl$REGION==2,]
+ 
+# A basic representation
+plot(afr)
+
+# construct a cartogram using the population in 2005
+afr_cartogram <- cartogram(afr, "POP2005", itermax=7)
+ 
+# A basic representation
+plot(afr_cartogram)
+
+```
+
+## Reference
+
+http://cse.naro.affrc.go.jp/takezawa/r-tips/r.html
+
