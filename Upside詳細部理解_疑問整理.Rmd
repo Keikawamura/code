@@ -1,0 +1,91 @@
+---
+title: "Upside_Model_Function_Formula"
+output: html_document
+---
+Catch-MSY Model
+$${\Large B_{t+1} = B_t + \frac{\phi+1}{\phi}gB_t \Biggl(1-\Biggl(\frac{B_t}{K}\Biggr)\Biggr)-H_t}$$
+
+
+bioModel-b_next
+※Pella-Tomlinson modelを用いている。
+$${\Large B_{t+1} = B_{t}+\frac{(φ+1)}{φ}gB_{t}(1-\frac{(1-(B_{t})^φ)}{φ+1})-g*B_{t}*f_{intervention1}-g*B_{t}*f_{intervention2}-g*B_{t}*f_{nonintervention}}$$
+
+
+bioModel-bmax
+$${\Large B_{max}=(φ+1)^{\frac{1}{φ}}-0.1}$$
+
+
+MSY
+※MSYの計算には生活史情報を用いている
+$${\Large MSY =\frac{gK}{{φ+1}^{\frac{1}{φ}}}}$$
+
+
+BMSY
+※BMSYの計算には生活史情報を用いている
+$${\Large B_{msy} = \frac{K}{{φ+1}^\frac{1}{φ}}}$$
+
+scenario 1=SQ 2=FMSY 4=econOpt
+```{r}
+################################################
+## policy function
+## Generates four policy functions, one for each scenario
+
+policy = function(s,g,K,phi,p1,p2,f0Int1,f0Int2,f0NonInt,c1,c2,beta,disc,bvec,split)
+{
+  
+  ## Policy vector for status quo; maintain f0_Intervention
+  if (s==1) {f1 = rep(f0Int1,length(bvec))
+  f2 = rep(f0Int2,length(bvec))}
+  
+  ## Policy vector that maximimzes food production; set at f=1 for all conditions, including f_NonIntervention
+  ## Split betwen two legal fleets using split
+  if (s==2) {f1 = rep(max(0, (1 - f0NonInt) * split),length(bvec))
+  f2 = rep(max(0, (1 - f0NonInt) * (1 - split)), length(bvec))}
+  
+  ## Policy vector that minimizes recovery time; set at 0 until b=1 then set at f=1, including f_NonIntervention
+  ## Split between two legal fleets using split
+  zeros = which(bvec<1)
+  ones = which(bvec>=1)
+  if (s==3) {f1 = c(rep(0,length(zeros)),rep(max(0,(1-f0NonInt) * split),length(ones)))
+  f2 = c(rep(0,length(zeros)),rep(max(0,(1-f0NonInt) * (1 - split)),length(ones)))}
+  
+  ## Policy vector that dynamically maximizes NPV
+  ## Split between two legal fleets using split
+  if (s==4) {f1 = dynamicPolicy(K,g,phi,p1,p2,c1,c2,beta,disc,bvec,f0NonInt,split)$f1 * split
+  f2 = dynamicPolicy(K,g,phi,p1,p2,c1,c2,beta,disc,bvec,f0NonInt,split)$f1 * (1-split)}
+  
+  ## Policy vector for closing the fishery; f0_Intervention = 0
+  if (s==5) {f1 = 0
+  f2 = 0}
+  
+  ## Policy vector for open access; maintain f0_Intervention. 
+  ## Mortality will be modified in projection loop depending on lambda
+  if (s==6) {f1 = rep(f0Int1,length(bvec))
+  f2 = rep(f0Int2,length(bvec))}
+  
+  return(list(f1=f1,
+              f2=f2))
+}
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
